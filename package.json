@@ -1,0 +1,89 @@
+{
+  "name": "readplugin",
+  "displayName": "Read Plugin",
+  "description": "A VSCode extension for secretly reading books while coding",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.107.1"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "*"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "readplugin.addBook",
+        "title": "Add Book"
+      },
+      {
+        "command": "readplugin.increaseFontSize",
+        "title": "Increase Font Size"
+      },
+      {
+        "command": "readplugin.decreaseFontSize",
+        "title": "Decrease Font Size"
+      },
+      {
+        "command": "readplugin.removeBook",
+        "title": "Remove Book"
+      },
+      {
+        "command": "readplugin.openBook",
+        "title": "Open Book"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "read-plugin",
+          "title": "Read",
+          "icon": "media/book.svg"
+        }
+      ]
+    },
+    "views": {
+      "read-plugin": [
+        {
+          "id": "read-plugin-books",
+          "name": "Books"
+        },
+        {
+          "type": "webview",
+          "id": "read-plugin.bookContent",
+          "name": "Book Content"
+        }
+      ]
+    },
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "readplugin.removeBook",
+          "when": "viewItem == bookItem",
+          "group": "inline"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.107.1",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "typescript-eslint": "^8.52.0",
+    "eslint": "^9.39.2",
+    "typescript": "^5.9.3",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2"
+  }
+}
