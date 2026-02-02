@@ -262,6 +262,10 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
                     this._state.setFontSize(data.fontSize);
                     console.log('Font size updated:', this._state.getFontSize());
                     break;
+                case 'loadPdfFile':
+                    console.log('Load PDF file requested for book:', data.bookId);
+                    this.loadPdfFile(data.bookId);
+                    break;
                 case 'loadMoreContent':
                     this.loadMoreContent(data.bookId, data.start, data.end, data.scrollPosition);
                     break;
@@ -328,6 +332,42 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    // 加载PDF文件
+    private loadPdfFile(bookId: string) {
+        if (!this._currentBook || this._currentBook.id !== bookId) {
+            return;
+        }
+
+        try {
+            console.log('Reading PDF file:', this._currentBook.path);
+
+            // 读取整个PDF文件
+            const pdfData = fs.readFileSync(this._currentBook.path);
+            console.log('PDF file read successfully, size:', pdfData.length, 'bytes');
+
+            // 转换为Base64
+            const base64Data = pdfData.toString('base64');
+            console.log('PDF data converted to Base64, length:', base64Data.length);
+
+            // 发送给webview
+            if (this._view) {
+                this._view.webview.postMessage({
+                    type: 'pdfData',
+                    data: base64Data
+                });
+                console.log('PDF data sent to webview');
+            }
+        } catch (error) {
+            console.error('Failed to load PDF file:', error);
+            if (this._view) {
+                this._view.webview.postMessage({
+                    type: 'pdfError',
+                    error: (error as Error).message || String(error)
+                });
+            }
+        }
+    }
+
     // 获取当前主题是否为暗色
     private isDarkTheme(): boolean {
         return vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Dark;
@@ -389,8 +429,269 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
                 <body>
                     <div class="empty-state">
                         <h2>Select a book to read</h2>
-                        <p>Use the "Add Book" command to add a .txt file</p>
+                        <p>Use the "Add Book" command to add a .txt or .pdf file</p>
                     </div>
+                </body>
+                </html>
+            `;
+        }
+
+        // 检查文件类型
+        const ext = path.extname(this._currentBook.path).toLowerCase();
+
+        // 对于PDF文件
+        if (ext === '.pdf') {
+            return `
+                <!DOCTYPE html>
+                <html lang="en">
+                <head>
+                    <meta charset="UTF-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>${this._currentBook.name}</title>
+                    <style>
+                        body {
+                            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+                            padding: 20px;
+                            line-height: 1.8;
+                            background-color: ${isDark ? '#1e1e1e' : '#f0f0f0'};
+                            color: ${isDark ? '#d4d4d4' : '#333'};
+                            transition: background-color 0.3s, color 0.3s;
+                        }
+                        .book-content {
+                            max-width: 800px;
+                            margin: 0 auto;
+                            background-color: ${isDark ? '#252526' : '#ffffff'};
+                            padding: 20px;
+                            border-radius: 8px;
+                            box-shadow: 0 2px 4px ${isDark ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.05)'};
+                            transition: background-color 0.3s;
+                        }
+                        #pdf-container {
+                            width: 100%;
+                            min-height: 800px;
+                            background-color: ${isDark ? '#1e1e1e' : '#f0f0f0'};
+                            border-radius: 4px;
+                            padding: 10px;
+                        }
+                        #pdf-canvas {
+                            display: block;
+                            margin: 0 auto;
+                            max-width: 100%;
+                            background-color: ${isDark ? '#000000' : '#ffffff'};
+                            border-radius: 2px;
+                        }
+                        .pdf-controls {
+                            display: flex;
+                            justify-content: center;
+                            gap: 10px;
+                            margin: 20px 0;
+                        }
+                        .pdf-btn {
+                            background-color: ${isDark ? '#333' : '#f0f0f0'};
+                            color: ${isDark ? '#d4d4d4' : '#333'};
+                            border: none;
+                            border-radius: 4px;
+                            padding: 8px 12px;
+                            font-size: 14px;
+                            cursor: pointer;
+                            transition: background-color 0.2s;
+                        }
+                        .pdf-btn:hover {
+                            background-color: ${isDark ? '#444' : '#e0e0e0'};
+                        }
+                        .loading-indicator {
+                            text-align: center;
+                            padding: 20px;
+                            color: ${isDark ? '#999' : '#666'};
+                            font-style: italic;
+                        }
+                        .page-info {
+                            text-align: center;
+                            margin: 10px 0;
+                            color: ${isDark ? '#999' : '#666'};
+                        }
+                    </style>
+                    <!-- 引入PDF.js库 -->
+                    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+                </head>
+                <body>
+                    <div class="book-content">
+                        <div id="pdf-container">
+                            <div id="loading" class="loading-indicator">Loading PDF...</div>
+                            <canvas id="pdf-canvas"></canvas>
+                            <div class="page-info" id="page-info"></div>
+                            <div class="pdf-controls">
+                                <button id="prev-page" class="pdf-btn">Previous</button>
+                                <button id="next-page" class="pdf-btn">Next</button>
+                                <button id="zoom-in" class="pdf-btn">Zoom In</button>
+                                <button id="zoom-out" class="pdf-btn">Zoom Out</button>
+                            </div>
+                        </div>
+                    </div>
+                    <script>
+                        console.log('PDF reader script loaded');
+                        const vscode = acquireVsCodeApi();
+
+                        // PDF相关变量
+                        let pdfDoc = null;
+                        let currentPage = 1;
+                        let zoom = 1.5; // 增大默认缩放级别，使PDF显示更大
+                        let totalPages = 0;
+
+                        // 加载PDF文件
+                        async function loadPDF() {
+                            try {
+                                console.log('Starting to load PDF...');
+                                console.log('Current theme from extension:', '${isDark ? 'dark' : 'light'}');
+
+                                // 请求扩展读取PDF文件内容
+                                vscode.postMessage({
+                                    type: 'loadPdfFile',
+                                    bookId: '${this._currentBook.id}'
+                                });
+                            } catch (error) {
+                                console.error('Error starting PDF load:', error);
+                                document.getElementById('loading').textContent = 'Error loading PDF: ' + error.message;
+                            }
+                        }
+
+                        // 监听来自扩展的PDF数据
+                        window.addEventListener('message', event => {
+                            const message = event.data;
+                            if (message.type === 'pdfData') {
+                                try {
+                                    console.log('Received PDF data, length:', message.data.length);
+
+                                    // 将Base64数据转换为ArrayBuffer
+                                    const binaryString = atob(message.data);
+                                    const len = binaryString.length;
+                                    const bytes = new Uint8Array(len);
+                                    for (let i = 0; i < len; i++) {
+                                        bytes[i] = binaryString.charCodeAt(i);
+                                    }
+                                    const arrayBuffer = bytes.buffer;
+
+                                    // 使用扩展传递的主题信息
+                                    const isDarkTheme = '${isDark}';
+                                    console.log('Current theme from extension:', isDarkTheme ? 'dark' : 'light');
+
+                                    // 使用ArrayBuffer加载PDF
+                                    const loadingTask = pdfjsLib.getDocument({
+                                        data: arrayBuffer,
+                                        cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/',
+                                        cMapPacked: true
+                                    });
+
+                                    loadingTask.promise.then(pdf => {
+                                        pdfDoc = pdf;
+                                        totalPages = pdf.numPages;
+                                        document.getElementById('page-info').textContent = 'Page ' + currentPage + ' of ' + totalPages;
+                                        document.getElementById('loading').style.display = 'none';
+                                        console.log('PDF loaded successfully, total pages:', totalPages);
+
+                                        // 渲染第一页
+                                        renderPage(currentPage);
+
+                                        // 更新阅读进度
+                                        updateProgress();
+                                    }).catch(error => {
+                                        console.error('Error loading PDF from data:', error);
+                                        document.getElementById('loading').textContent = 'Error loading PDF: ' + error.message;
+                                    });
+                                } catch (error) {
+                                    console.error('Error processing PDF data:', error);
+                                    document.getElementById('loading').textContent = 'Error processing PDF data: ' + error.message;
+                                }
+                            }
+                        });
+
+                        // 渲染页面
+                        async function renderPage(pageNum) {
+                            const page = await pdfDoc.getPage(pageNum);
+                            const canvas = document.getElementById('pdf-canvas');
+                            const ctx = canvas.getContext('2d');
+
+                            // 使用扩展传递的主题信息
+                            const isDarkTheme = ${isDark};
+                            console.log('Rendering page with theme:', isDarkTheme ? 'dark' : 'light');
+
+                            // 设置画布大小
+                            const viewport = page.getViewport({ scale: zoom });
+                            canvas.width = viewport.width;
+                            canvas.height = viewport.height;
+
+                            // 清空画布并设置背景色
+                            ctx.fillStyle = isDarkTheme ? '#000000' : '#ffffff';
+                            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                            // 渲染PDF页面
+                            const renderContext = {
+                                canvasContext: ctx,
+                                viewport: viewport
+                            };
+
+                            await page.render(renderContext).promise;
+
+                            // 如果是暗色主题，对画布进行处理，将白色背景转换为黑色
+                            if (isDarkTheme) {
+                                console.log('Applying dark mode filter to PDF');
+                                // 使用CSS滤镜实现暗色模式
+                                canvas.style.filter = 'invert(1) hue-rotate(180deg)';
+                                // 设置画布背景为黑色
+                                canvas.style.backgroundColor = '#000000';
+                                // 同时设置容器背景为黑色
+                                document.getElementById('pdf-container').style.backgroundColor = '#000000';
+                            } else {
+                                // 亮色主题，重置滤镜
+                                canvas.style.filter = 'none';
+                                canvas.style.backgroundColor = '#ffffff';
+                                // 同时设置容器背景为亮色
+                                document.getElementById('pdf-container').style.backgroundColor = '#f0f0f0';
+                            }
+
+                            document.getElementById('page-info').textContent = 'Page ' + pageNum + ' of ' + totalPages;
+                            currentPage = pageNum;
+
+                            // 更新阅读进度
+                            updateProgress();
+                        }
+
+                        // 更新阅读进度
+                        function updateProgress() {
+                            const progress = (currentPage / totalPages) * 100;
+                            const formattedProgress = Math.round(progress * 100) / 100;
+                            vscode.postMessage({
+                                type: 'updateProgress',
+                                progress: formattedProgress
+                            });
+                        }
+
+                        // 绑定事件
+                        document.getElementById('prev-page').addEventListener('click', () => {
+                            if (currentPage > 1) {
+                                renderPage(currentPage - 1);
+                            }
+                        });
+
+                        document.getElementById('next-page').addEventListener('click', () => {
+                            if (currentPage < totalPages) {
+                                renderPage(currentPage + 1);
+                            }
+                        });
+
+                        document.getElementById('zoom-in').addEventListener('click', () => {
+                            zoom *= 1.2;
+                            renderPage(currentPage);
+                        });
+
+                        document.getElementById('zoom-out').addEventListener('click', () => {
+                            zoom /= 1.2;
+                            renderPage(currentPage);
+                        });
+
+                        // 初始加载
+                        loadPDF();
+                    </script>
                 </body>
                 </html>
             `;
@@ -533,7 +834,21 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
                     <button id="increase-font" class="font-btn">A+</button>
                 </div>
                 <script>
+                    console.log('Book reader script loaded');
                     const vscode = acquireVsCodeApi();
+                    console.log('VSCode API acquired');
+
+                    // 立即执行的调试代码
+                    setTimeout(() => {
+                        console.log('=== Debug Info ===');
+                        console.log('Document ready');
+                        console.log('Increase button:', document.getElementById('increase-font'));
+                        console.log('Decrease button:', document.getElementById('decrease-font'));
+                        console.log('Content element:', document.getElementById('content'));
+                        console.log('Font controls element:', document.querySelector('.font-controls-fixed'));
+                        console.log('Body:', document.body);
+                        console.log('=== End Debug Info ===');
+                    }, 100);
 
                     // 书籍信息
                     const bookInfo = {
@@ -742,15 +1057,19 @@ export function activate(context: vscode.ExtensionContext) {
                 canSelectFolders: false,
                 canSelectMany: false,
                 filters: {
-                    'Text Files': ['txt']
+                    'Books': ['txt', 'pdf'],
+                    'Text Files': ['txt'],
+                    'PDF Files': ['pdf']
                 }
             });
 
             if (fileUri && fileUri[0]) {
                 const filePath = fileUri[0].fsPath;
-                // 增加.txt文件校验
-                if (path.extname(filePath).toLowerCase() !== '.txt') {
-                    vscode.window.showErrorMessage('Please select a .txt file');
+                const ext = path.extname(filePath).toLowerCase();
+
+                // 校验文件类型
+                if (ext !== '.txt' && ext !== '.pdf') {
+                    vscode.window.showErrorMessage('Please select a .txt or .pdf file');
                     return;
                 }
 
