@@ -87,7 +87,9 @@ class ReadPluginState {
     updateBookProgress(bookId: string, progress: number) {
         const book = this.books.find(b => b.id === bookId);
         if (book) {
-            book.progress = Math.max(0, Math.min(100, progress));
+            // 保留2位小数并限制范围
+            const formattedProgress = Math.max(0, Math.min(100, Math.round(progress * 100) / 100));
+            book.progress = formattedProgress;
             this.saveState();
         }
     }
@@ -129,6 +131,11 @@ class BooksTreeDataProvider implements vscode.TreeDataProvider<BookItem | AddBoo
         this._onDidChangeTreeData.fire();
     }
 
+    // 刷新单个书籍项
+    refreshBook(bookId: string): void {
+        this._onDidChangeTreeData.fire();
+    }
+
     getTreeItem(element: BookItem | AddBookItem): vscode.TreeItem {
         return element;
     }
@@ -161,8 +168,10 @@ class AddBookItem extends vscode.TreeItem {
 class BookItem extends vscode.TreeItem {
     constructor(public readonly book: Book) {
         super(book.name, vscode.TreeItemCollapsibleState.None);
-        this.tooltip = `${book.name}\nProgress: ${book.progress}%`;
-        this.description = `${book.progress}%`;
+        // 保留2位小数显示进度
+        const formattedProgress = Math.round(book.progress * 100) / 100;
+        this.tooltip = `${book.name}\nProgress: ${formattedProgress}%`;
+        this.description = `${formattedProgress}%`;
         this.command = {
             command: 'readplugin.openBook',
             title: 'Open Book',
@@ -180,9 +189,15 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
     private _view?: vscode.WebviewView;
     private _currentBook?: Book;
     private _state: ReadPluginState;
+    private _treeDataProvider?: BooksTreeDataProvider;
 
     constructor(private readonly _extensionContext: vscode.ExtensionContext, state: ReadPluginState) {
         this._state = state;
+    }
+
+    // 设置树数据提供者
+    setTreeDataProvider(provider: BooksTreeDataProvider) {
+        this._treeDataProvider = provider;
     }
 
     resolveWebviewView(
@@ -217,7 +232,19 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
                 case 'updateProgress':
                     if (this._currentBook) {
                         this._state.updateBookProgress(this._currentBook.id, data.progress);
+                        // 实时刷新树视图
+                        if (this._treeDataProvider) {
+                            this._treeDataProvider.refreshBook(this._currentBook.id);
+                        }
                     }
+                    break;
+                case 'increaseFontSize':
+                    this._state.increaseFontSize();
+                    this.updateFontSize();
+                    break;
+                case 'decreaseFontSize':
+                    this._state.decreaseFontSize();
+                    this.updateFontSize();
                     break;
             }
         });
@@ -316,30 +343,73 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
                         white-space: pre-wrap;
                         transition: background-color 0.3s;
                     }
-                    .book-title {
-                        font-size: 20px;
-                        font-weight: bold;
+                    .book-header {
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
                         margin-bottom: 20px;
                         padding-bottom: 10px;
                         border-bottom: 1px solid ${isDark ? '#333' : '#f0f0f0'};
+                    }
+                    .book-title {
+                        font-size: 20px;
+                        font-weight: bold;
                         color: ${isDark ? '#999' : '#666'};
+                        flex: 1;
+                    }
+                    .font-controls {
+                        display: flex;
+                        gap: 8px;
+                    }
+                    .font-btn {
+                        background-color: ${isDark ? '#333' : '#f0f0f0'};
+                        color: ${isDark ? '#d4d4d4' : '#333'};
+                        border: none;
+                        border-radius: 4px;
+                        padding: 4px 8px;
+                        font-size: 14px;
+                        cursor: pointer;
+                        transition: background-color 0.2s;
+                    }
+                    .font-btn:hover {
+                        background-color: ${isDark ? '#444' : '#e0e0e0'};
+                    }
+                    .font-btn:active {
+                        background-color: ${isDark ? '#555' : '#d0d0d0'};
                     }
                 </style>
             </head>
             <body>
                 <div class="book-content">
-                    <div class="book-title">${this._currentBook.name}</div>
+                    <div class="book-header">
+                        <div class="book-title">${this._currentBook.name}</div>
+                        <div class="font-controls">
+                            <button id="decrease-font" class="font-btn">A-</button>
+                            <button id="increase-font" class="font-btn">A+</button>
+                        </div>
+                    </div>
                     <div class="content">${content}</div>
                 </div>
                 <script>
                     const vscode = acquireVsCodeApi();
 
+                    // 字体调节功能
+                    document.getElementById('increase-font').addEventListener('click', () => {
+                        vscode.postMessage({ type: 'increaseFontSize' });
+                    });
+
+                    document.getElementById('decrease-font').addEventListener('click', () => {
+                        vscode.postMessage({ type: 'decreaseFontSize' });
+                    });
+
                     // 监听滚动事件更新进度
                     window.addEventListener('scroll', () => {
                         const scrollTop = window.scrollY;
                         const scrollHeight = document.documentElement.scrollHeight - window.innerHeight;
-                        const progress = (scrollTop / scrollHeight) * 100;
-                        vscode.postMessage({ type: 'updateProgress', progress });
+                        const progress = scrollHeight > 0 ? (scrollTop / scrollHeight) * 100 : 0;
+                        // 保留2位小数
+                        const formattedProgress = Math.round(progress * 100) / 100;
+                        vscode.postMessage({ type: 'updateProgress', progress: formattedProgress });
                     });
 
                     // 初始滚动到上次阅读位置
@@ -370,6 +440,8 @@ export function activate(context: vscode.ExtensionContext) {
 
     // 注册书籍内容视图
     const bookContentProvider = new BookContentViewProvider(context, state);
+    // 设置树数据提供者，用于实时刷新
+    bookContentProvider.setTreeDataProvider(booksTreeDataProvider);
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(BookContentViewProvider.viewType, bookContentProvider)
     );
@@ -427,8 +499,30 @@ export function activate(context: vscode.ExtensionContext) {
     // 注册删除书籍命令
     context.subscriptions.push(
         vscode.commands.registerCommand('readplugin.removeBook', (bookItem: BookItem) => {
-            state.removeBook(bookItem.book.id);
-            booksTreeDataProvider.refresh();
+            // 确认删除
+            vscode.window.showInformationMessage(
+                `Are you sure you want to remove "${bookItem.book.name}"?`,
+                { modal: true },
+                'Yes', 'No'
+            ).then(choice => {
+                if (choice === 'Yes') {
+                    // 检查是否是当前正在阅读的书籍
+                    if (bookContentProvider && bookContentProvider['_currentBook'] &&
+                        bookContentProvider['_currentBook'].id === bookItem.book.id) {
+                        // 清除当前阅读的书籍
+                        (bookContentProvider as any)._currentBook = undefined;
+                        // 重新渲染内容视图
+                        if (bookContentProvider['_view']) {
+                            bookContentProvider['_view'].webview.html =
+                                (bookContentProvider as any)._getHtmlForWebview(bookContentProvider['_view'].webview);
+                        }
+                    }
+
+                    state.removeBook(bookItem.book.id);
+                    booksTreeDataProvider.refresh();
+                    vscode.window.showInformationMessage(`Removed book: ${bookItem.book.name}`);
+                }
+            });
         })
     );
 }
