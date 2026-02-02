@@ -118,6 +118,13 @@ class ReadPluginState {
         this.saveState();
         return this.currentFontSize;
     }
+
+    // 设置字体大小
+    setFontSize(size: number) {
+        this.currentFontSize = Math.max(8, Math.min(48, size));
+        this.saveState();
+        return this.currentFontSize;
+    }
 }
 
 // 书籍视图提供者
@@ -239,12 +246,24 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
                     }
                     break;
                 case 'increaseFontSize':
+                    console.log('Increase font size requested');
                     this._state.increaseFontSize();
-                    this.updateFontSize();
+                    console.log('Font size after increase:', this._state.getFontSize());
+                    this.updateFontSize(data.scrollPosition);
                     break;
                 case 'decreaseFontSize':
+                    console.log('Decrease font size requested');
                     this._state.decreaseFontSize();
-                    this.updateFontSize();
+                    console.log('Font size after decrease:', this._state.getFontSize());
+                    this.updateFontSize(data.scrollPosition);
+                    break;
+                case 'updateFontSize':
+                    console.log('Update font size requested:', data.fontSize);
+                    this._state.setFontSize(data.fontSize);
+                    console.log('Font size updated:', this._state.getFontSize());
+                    break;
+                case 'loadMoreContent':
+                    this.loadMoreContent(data.bookId, data.start, data.end, data.scrollPosition);
                     break;
             }
         });
@@ -260,15 +279,83 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
     }
 
     // 更新字体大小
-    updateFontSize() {
+    updateFontSize(scrollPosition?: number) {
+        console.log('Update font size called, scrollPosition:', scrollPosition);
         if (this._view) {
-            this._view.webview.html = this._getHtmlForWebview(this._view.webview);
+            console.log('Current font size:', this._state.getFontSize());
+            const html = this._getHtmlForWebview(this._view.webview);
+            console.log('HTML generated, updating webview');
+            this._view.webview.html = html;
+
+            // 如果提供了滚动位置，恢复它
+            if (scrollPosition !== undefined) {
+                // 使用setTimeout确保DOM已经加载完成
+                setTimeout(() => {
+                    console.log('Restoring scroll position:', scrollPosition);
+                    this._view?.webview.postMessage({
+                        type: 'restoreScrollPosition',
+                        scrollPosition: scrollPosition
+                    });
+                }, 100);
+            }
+        } else {
+            console.error('View is not initialized');
+        }
+    }
+
+    // 加载更多内容
+    private loadMoreContent(bookId: string, start: number, end: number, scrollPosition?: number) {
+        if (!this._currentBook || this._currentBook.id !== bookId) {
+            return;
+        }
+
+        try {
+            // 读取指定范围的内容
+            const content = this.readFilePart(this._currentBook.path, start, end);
+
+            // 发送内容到webview
+            if (this._view) {
+                this._view.webview.postMessage({
+                    type: 'contentLoaded',
+                    content: content,
+                    start: start,
+                    end: end,
+                    scrollPosition: scrollPosition
+                });
+            }
+        } catch (error) {
+            console.error('Failed to load more content:', error);
         }
     }
 
     // 获取当前主题是否为暗色
     private isDarkTheme(): boolean {
         return vscode.window.activeColorTheme.kind === vscode.ColorThemeKind.Dark;
+    }
+
+    // 读取文件的部分内容
+    private readFilePart(filePath: string, start: number, end: number): string {
+        try {
+            const buffer = Buffer.alloc(end - start);
+            const fd = fs.openSync(filePath, 'r');
+            fs.readSync(fd, buffer, 0, end - start, start);
+            fs.closeSync(fd);
+            return buffer.toString('utf8');
+        } catch (error) {
+            console.error('Failed to read file part:', error);
+            return 'Failed to load content';
+        }
+    }
+
+    // 获取文件大小
+    private getFileSize(filePath: string): number {
+        try {
+            const stats = fs.statSync(filePath);
+            return stats.size;
+        } catch (error) {
+            console.error('Failed to get file size:', error);
+            return 0;
+        }
     }
 
     // 获取webview HTML
@@ -309,9 +396,20 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
             `;
         }
 
+        // 获取文件大小
+        const fileSize = this.getFileSize(this._currentBook.path);
+        // 计算初始加载位置（基于阅读进度）
+        const initialStart = Math.floor((this._currentBook.progress / 100) * fileSize);
+        // 每次加载的字节数（约50KB）
+        const chunkSize = 50 * 1024;
+        // 计算加载范围，向前和向后各加载一些内容
+        const start = Math.max(0, initialStart - chunkSize);
+        const end = Math.min(fileSize, initialStart + chunkSize * 2);
+
+        // 读取部分内容
         let content = 'Failed to load book';
         try {
-            content = fs.readFileSync(this._currentBook.path, 'utf8');
+            content = this.readFilePart(this._currentBook.path, start, end);
         } catch (error) {
             console.error('Failed to read book:', error);
         }
@@ -377,39 +475,204 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
                     .font-btn:active {
                         background-color: ${isDark ? '#555' : '#d0d0d0'};
                     }
+                    .loading-indicator {
+                        text-align: center;
+                        padding: 20px;
+                        color: ${isDark ? '#999' : '#666'};
+                        font-style: italic;
+                    }
+                    .content-wrapper {
+                        position: relative;
+                    }
+                    .font-controls-fixed {
+                        position: fixed;
+                        top: 50%;
+                        right: 20px;
+                        transform: translateY(-50%);
+                        display: flex;
+                        flex-direction: column;
+                        gap: 8px;
+                        z-index: 1000;
+                        background-color: ${isDark ? 'rgba(30, 30, 30, 0.9)' : 'rgba(255, 255, 255, 0.9)'};
+                        padding: 10px;
+                        border-radius: 8px;
+                        box-shadow: 0 2px 8px ${isDark ? 'rgba(0, 0, 0, 0.4)' : 'rgba(0, 0, 0, 0.1)'};
+                    }
+                    .font-btn {
+                        background-color: ${isDark ? '#333' : '#f0f0f0'};
+                        color: ${isDark ? '#d4d4d4' : '#333'};
+                        border: none;
+                        border-radius: 4px;
+                        padding: 8px 12px;
+                        font-size: 14px;
+                        cursor: pointer;
+                        transition: background-color 0.2s, transform 0.1s;
+                    }
+                    .font-btn:hover {
+                        background-color: ${isDark ? '#444' : '#e0e0e0'};
+                    }
+                    .font-btn:active {
+                        background-color: ${isDark ? '#555' : '#d0d0d0'};
+                        transform: scale(0.95);
+                    }
+                    .content {
+                        font-size: ${this._state.getFontSize()}px;
+                        transition: font-size 0.3s;
+                    }
                 </style>
             </head>
             <body>
                 <div class="book-content">
-                    <div class="book-header">
-                        <div class="book-title">${this._currentBook.name}</div>
-                        <div class="font-controls">
-                            <button id="decrease-font" class="font-btn">A-</button>
-                            <button id="increase-font" class="font-btn">A+</button>
-                        </div>
+                    <div class="content-wrapper">
+                        <div id="content" class="content">${content}</div>
+                        <div id="loading" class="loading-indicator" style="display: none;">Loading more content...</div>
                     </div>
-                    <div class="content">${content}</div>
+                </div>
+                <div class="font-controls-fixed">
+                    <button id="decrease-font" class="font-btn">A-</button>
+                    <button id="increase-font" class="font-btn">A+</button>
                 </div>
                 <script>
                     const vscode = acquireVsCodeApi();
 
+                    // 书籍信息
+                    const bookInfo = {
+                        id: '${this._currentBook.id}',
+                        filePath: '${this._currentBook.path}',
+                        fileSize: ${fileSize},
+                        chunkSize: ${chunkSize}
+                    };
+
+                    // 保存当前滚动位置
+                    function saveScrollPosition() {
+                        return window.scrollY;
+                    }
+
+                    // 恢复滚动位置
+                    function restoreScrollPosition(position) {
+                        window.scrollTo(0, position);
+                    }
+
                     // 字体调节功能
-                    document.getElementById('increase-font').addEventListener('click', () => {
-                        vscode.postMessage({ type: 'increaseFontSize' });
-                    });
+                    const increaseBtn = document.getElementById('increase-font');
+                    const decreaseBtn = document.getElementById('decrease-font');
+                    const contentElement = document.getElementById('content');
 
-                    document.getElementById('decrease-font').addEventListener('click', () => {
-                        vscode.postMessage({ type: 'decreaseFontSize' });
-                    });
+                    console.log('Font controls initialized');
+                    console.log('Increase button:', increaseBtn);
+                    console.log('Decrease button:', decreaseBtn);
+                    console.log('Content element:', contentElement);
 
-                    // 监听滚动事件更新进度
+                    // 获取当前字体大小
+                    let currentFontSize = ${this._state.getFontSize()};
+                    console.log('Initial font size:', currentFontSize);
+
+                    // 更新字体大小的函数
+                    function updateFontSize(size) {
+                        if (contentElement) {
+                            contentElement.style.fontSize = size + 'px';
+                            console.log('Font size updated to:', size);
+                            // 保存到localStorage
+                            localStorage.setItem('readplugin-fontsize', size.toString());
+                        }
+                    }
+
+                    if (increaseBtn) {
+                        increaseBtn.addEventListener('click', () => {
+                            console.log('Increase font size clicked');
+                            currentFontSize += 2;
+                            updateFontSize(currentFontSize);
+                            // 同时通知扩展更新
+                            vscode.postMessage({
+                                type: 'updateFontSize',
+                                fontSize: currentFontSize
+                            });
+                        });
+                    } else {
+                        console.error('Increase font button not found');
+                    }
+
+                    if (decreaseBtn) {
+                        decreaseBtn.addEventListener('click', () => {
+                            console.log('Decrease font size clicked');
+                            currentFontSize = Math.max(8, currentFontSize - 2);
+                            updateFontSize(currentFontSize);
+                            // 同时通知扩展更新
+                            vscode.postMessage({
+                                type: 'updateFontSize',
+                                fontSize: currentFontSize
+                            });
+                        });
+                    } else {
+                        console.error('Decrease font button not found');
+                    }
+
+                    // 从localStorage加载保存的字体大小
+                    const savedFontSize = localStorage.getItem('readplugin-fontsize');
+                    if (savedFontSize) {
+                        const size = parseInt(savedFontSize);
+                        if (!isNaN(size)) {
+                            currentFontSize = size;
+                            updateFontSize(currentFontSize);
+                            console.log('Loaded saved font size:', size);
+                        }
+                    }
+
+                    // 加载更多内容
+                    function loadMoreContent(direction) {
+                        const contentElement = document.getElementById('content');
+                        const loadingElement = document.getElementById('loading');
+
+                        if (!contentElement || !loadingElement) return;
+
+                        // 显示加载指示器
+                        loadingElement.style.display = 'block';
+
+                        // 计算当前内容的范围
+                        const currentTop = contentElement.getAttribute('data-start') || 0;
+                        const currentBottom = contentElement.getAttribute('data-end') || bookInfo.fileSize;
+
+                        // 计算新的加载范围
+                        let newStart = parseInt(currentTop);
+                        let newEnd = parseInt(currentBottom);
+
+                        if (direction === 'up') {
+                            newStart = Math.max(0, newStart - bookInfo.chunkSize);
+                        } else if (direction === 'down') {
+                            newEnd = Math.min(bookInfo.fileSize, newEnd + bookInfo.chunkSize);
+                        }
+
+                        // 请求加载更多内容
+                        vscode.postMessage({
+                            type: 'loadMoreContent',
+                            bookId: bookInfo.id,
+                            start: newStart,
+                            end: newEnd,
+                            direction: direction
+                        });
+                    }
+
+                    // 监听滚动事件
                     window.addEventListener('scroll', () => {
                         const scrollTop = window.scrollY;
-                        const scrollHeight = document.documentElement.scrollHeight - window.innerHeight;
-                        const progress = scrollHeight > 0 ? (scrollTop / scrollHeight) * 100 : 0;
-                        // 保留2位小数
+                        const scrollHeight = document.documentElement.scrollHeight;
+                        const clientHeight = window.innerHeight;
+
+                        // 更新进度
+                        const progress = scrollHeight > clientHeight ? (scrollTop / (scrollHeight - clientHeight)) * 100 : 0;
                         const formattedProgress = Math.round(progress * 100) / 100;
                         vscode.postMessage({ type: 'updateProgress', progress: formattedProgress });
+
+                        // 检测是否需要加载更多内容
+                        const threshold = 300; // 阈值，当距离顶部或底部小于此值时加载
+
+                        if (scrollTop < threshold) {
+                            // 接近顶部，加载上面的内容
+                            loadMoreContent('up');
+                        } else if (scrollTop > scrollHeight - clientHeight - threshold) {
+                            // 接近底部，加载下面的内容
+                            loadMoreContent('down');
+                        }
                     });
 
                     // 初始滚动到上次阅读位置
@@ -419,6 +682,31 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
                             const scrollHeight = document.documentElement.scrollHeight - window.innerHeight;
                             const scrollTop = (progress / 100) * scrollHeight;
                             window.scrollTo(0, scrollTop);
+                        }
+                    });
+
+                    // 监听来自扩展的消息
+                    window.addEventListener('message', event => {
+                        const message = event.data;
+
+                        if (message.type === 'restoreScrollPosition') {
+                            restoreScrollPosition(message.scrollPosition);
+                        } else if (message.type === 'contentLoaded') {
+                            // 更新内容
+                            const contentElement = document.getElementById('content');
+                            const loadingElement = document.getElementById('loading');
+
+                            if (contentElement && loadingElement) {
+                                contentElement.innerHTML = message.content;
+                                contentElement.setAttribute('data-start', message.start);
+                                contentElement.setAttribute('data-end', message.end);
+                                loadingElement.style.display = 'none';
+
+                                // 恢复滚动位置
+                                if (message.scrollPosition !== undefined) {
+                                    restoreScrollPosition(message.scrollPosition);
+                                }
+                            }
                         }
                     });
                 </script>
