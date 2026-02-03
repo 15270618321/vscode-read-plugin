@@ -6,34 +6,68 @@
   "engines": {
     "vscode": "^1.107.1"
   },
+  "publisher": "your-name",
   "categories": [
-    "Other"
+    "Other",
+    "Education"
   ],
+  "keywords": [
+    "reader",
+    "books",
+    "pdf",
+    "text",
+    "reading"
+  ],
+  "icon": "media/book.svg",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/read-plugin.git"
+  },
+  "bugs": {
+    "url": "https://github.com/your-username/read-plugin/issues"
+  },
+  "homepage": "https://github.com/your-username/read-plugin#readme",
+  "license": "MIT",
   "activationEvents": [
-    "*"
+    "onStartupFinished"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
         "command": "readplugin.addBook",
-        "title": "Add Book"
-      },
-      {
-        "command": "readplugin.increaseFontSize",
-        "title": "Increase Font Size"
-      },
-      {
-        "command": "readplugin.decreaseFontSize",
-        "title": "Decrease Font Size"
-      },
-      {
-        "command": "readplugin.removeBook",
-        "title": "Remove Book"
+        "title": "Add Book",
+        "category": "Book Reader"
       },
       {
         "command": "readplugin.openBook",
-        "title": "Open Book"
+        "title": "Open Book",
+        "category": "Book Reader"
+      },
+      {
+        "command": "readplugin.removeBook",
+        "title": "Remove Book",
+        "category": "Book Reader"
+      },
+      {
+        "command": "readplugin.increaseFontSize",
+        "title": "Increase Font Size",
+        "category": "Book Reader"
+      },
+      {
+        "command": "readplugin.decreaseFontSize",
+        "title": "Decrease Font Size",
+        "category": "Book Reader"
+      },
+      {
+        "command": "readplugin.resetFontSize",
+        "title": "Reset Font Size",
+        "category": "Book Reader"
+      },
+      {
+        "command": "readplugin.openSettings",
+        "title": "Open Settings",
+        "category": "Book Reader"
       }
     ],
     "viewsContainers": {
@@ -52,17 +86,89 @@
           "name": "Books"
         },
         {
-          "type": "webview",
           "id": "read-plugin.bookContent",
-          "name": "Book Content"
+          "name": "Book Content",
+          "type": "webview"
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "read-plugin-books",
+        "contents": "No books added yet.\n[Add Book](command:readplugin.addBook)"
+      }
+    ],
+    "configuration": {
+      "title": "Book Reader",
+      "properties": {
+        "readplugin.fontSize": {
+          "type": "number",
+          "default": 14,
+          "minimum": 8,
+          "maximum": 48,
+          "description": "Default font size for reading"
+        },
+        "readplugin.fontFamily": {
+          "type": "string",
+          "default": "'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
+          "description": "Font family for reading"
+        },
+        "readplugin.lineHeight": {
+          "type": "number",
+          "default": 1.8,
+          "minimum": 1,
+          "maximum": 3,
+          "description": "Line height for reading"
+        },
+        "readplugin.theme": {
+          "type": "string",
+          "default": "auto",
+          "enum": ["auto", "light", "dark"],
+          "description": "Reading theme"
+        },
+        "readplugin.autoSaveInterval": {
+          "type": "number",
+          "default": 3000,
+          "minimum": 1000,
+          "maximum": 30000,
+          "description": "Auto save interval in milliseconds"
+        },
+        "readplugin.maxFileSize": {
+          "type": "number",
+          "default": 52428800,
+          "description": "Maximum file size in bytes (default: 50MB)"
+        }
+      }
+    },
+    "keybindings": [
+      {
+        "command": "readplugin.increaseFontSize",
+        "key": "ctrl+=",
+        "when": "webviewFocus && activeWebviewPanelId == 'read-plugin.bookContent'"
+      },
+      {
+        "command": "readplugin.decreaseFontSize",
+        "key": "ctrl+-",
+        "when": "webviewFocus && activeWebviewPanelId == 'read-plugin.bookContent'"
+      }
+    ],
     "menus": {
+      "view/title": [
+        {
+          "command": "readplugin.addBook",
+          "when": "view == read-plugin-books",
+          "group": "navigation"
+        }
+      ],
       "view/item/context": [
         {
+          "command": "readplugin.openBook",
+          "when": "view == read-plugin-books && viewItem == bookItem",
+          "group": "navigation"
+        },
+        {
           "command": "readplugin.removeBook",
-          "when": "viewItem == bookItem",
+          "when": "view == read-plugin-books && viewItem == bookItem",
           "group": "inline"
         }
       ]
@@ -73,14 +179,15 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
-    "lint": "eslint src",
+    "lint": "eslint src --ext .ts",
     "test": "vscode-test"
   },
   "devDependencies": {
     "@types/vscode": "^1.107.1",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
-    "typescript-eslint": "^8.52.0",
+    "@typescript-eslint/eslint-plugin": "^8.52.0",
+    "@typescript-eslint/parser": "^8.52.0",
     "eslint": "^9.39.2",
     "typescript": "^5.9.3",
     "@vscode/test-cli": "^0.0.12",
