@@ -12,6 +12,9 @@ import { ThemeUtils } from './utils/themeUtils';
 import { debounce, throttle } from './utils/debounce';
 import { EventManager } from './managers/eventManager';
 
+// 导入服务
+import { WechatReadService } from './services/wechatReadService';
+
 // 导入类型定义
 import {
     Book,
@@ -36,6 +39,35 @@ class ReadPluginState {
 
         // 注册自动保存
         this.registerAutoSave();
+    }
+
+    async syncWechatBooks(): Promise<Book[]> {
+        const service = new WechatReadService(this.settings);
+
+        try {
+            const wechatBooks = await service.getBooks(this.settings.wechatReadSynckey || 0);
+
+            // 更新本地存储的微信读书书籍
+            const localBooks = this.books.filter(book => book.type !== 'wechat');
+            this.books = [...localBooks, ...wechatBooks];
+
+            // 更新synckey
+            if (wechatBooks.length > 0 && wechatBooks[0].synckey) {
+                this.settings.wechatReadSynckey = wechatBooks[0].synckey;
+                this.saveSettings();
+            }
+
+            this.saveBooks();
+            return wechatBooks;
+        } catch (error) {
+            console.error('Failed to sync WeChat books:', error);
+            vscode.window.showErrorMessage('Failed to sync WeChat books');
+            return [];
+        }
+    }
+
+    getWechatBooks(): Book[] {
+        return this.books.filter(book => book.type === 'wechat');
     }
 
     private getStoragePath(context: vscode.ExtensionContext): string {
@@ -253,11 +285,15 @@ class BookItem extends vscode.TreeItem {
         };
 
         // 设置图标
-        const ext = path.extname(book.name).toLowerCase();
-        if (ext === '.pdf') {
-            this.iconPath = new vscode.ThemeIcon('file-pdf');
+        if (book.type === 'wechat') {
+            this.iconPath = new vscode.ThemeIcon('book');
         } else {
-            this.iconPath = new vscode.ThemeIcon('file-text');
+            const ext = path.extname(book.name).toLowerCase();
+            if (ext === '.pdf') {
+                this.iconPath = new vscode.ThemeIcon('file-pdf');
+            } else {
+                this.iconPath = new vscode.ThemeIcon('file-text');
+            }
         }
     }
 
@@ -265,9 +301,23 @@ class BookItem extends vscode.TreeItem {
         const lines = [
             `Name: ${this.book.name}`,
             `Progress: ${Math.round(this.book.progress * 100) / 100}%`,
-            `Size: ${this.formatFileSize(this.book.fileSize)}`,
             `Added: ${new Date(this.book.addedTime).toLocaleDateString()}`
         ];
+
+        if (this.book.type === 'wechat') {
+            lines.push(`Type: WeChat Read`);
+            if (this.book.author) {
+                lines.push(`Author: ${this.book.author}`);
+            }
+            if (this.book.bookId) {
+                lines.push(`Book ID: ${this.book.bookId}`);
+            }
+        } else {
+            lines.push(`Size: ${this.formatFileSize(this.book.fileSize)}`);
+            if (this.book.encoding) {
+                lines.push(`Encoding: ${this.book.encoding}`);
+            }
+        }
 
         if (this.book.lastReadTime) {
             lines.push(`Last Read: ${new Date(this.book.lastReadTime).toLocaleString()}`);
@@ -301,11 +351,49 @@ class AddBookItem extends vscode.TreeItem {
     }
 }
 
+// 微信读书登录项
+class WechatLoginItem extends vscode.TreeItem {
+    constructor() {
+        super('🔐 Login to WeChat Read', vscode.TreeItemCollapsibleState.None);
+        this.tooltip = 'Login to WeChat Read to access your books';
+        this.command = {
+            command: 'readplugin.loginWechatRead',
+            title: 'Login to WeChat Read'
+        };
+        this.iconPath = new vscode.ThemeIcon('key');
+        this.contextValue = 'wechatLoginItem';
+    }
+}
+
+// 微信读书同步项
+class WechatSyncItem extends vscode.TreeItem {
+    constructor() {
+        super('🔄 Sync WeChat Books', vscode.TreeItemCollapsibleState.None);
+        this.tooltip = 'Sync your WeChat Read books';
+        this.command = {
+            command: 'readplugin.syncWechatBooks',
+            title: 'Sync WeChat Books'
+        };
+        this.iconPath = new vscode.ThemeIcon('sync');
+        this.contextValue = 'wechatSyncItem';
+    }
+}
+
+// 微信读书状态项
+class WechatStatusItem extends vscode.TreeItem {
+    constructor(status: string) {
+        super(`📱 WeChat Read: ${status}`, vscode.TreeItemCollapsibleState.None);
+        this.tooltip = `WeChat Read status: ${status}`;
+        this.iconPath = new vscode.ThemeIcon('info');
+        this.contextValue = 'wechatStatusItem';
+    }
+}
+
 // 书籍树数据提供者
-class BooksTreeDataProvider implements vscode.TreeDataProvider<BookItem | AddBookItem> {
-    private _onDidChangeTreeData: vscode.EventEmitter<BookItem | AddBookItem | undefined | null | void> =
-        new vscode.EventEmitter<BookItem | AddBookItem | undefined | null | void>();
-    readonly onDidChangeTreeData: vscode.Event<BookItem | AddBookItem | undefined | null | void> =
+class BooksTreeDataProvider implements vscode.TreeDataProvider<BookItem | AddBookItem | WechatLoginItem | WechatSyncItem | WechatStatusItem> {
+    private _onDidChangeTreeData: vscode.EventEmitter<BookItem | AddBookItem | WechatLoginItem | WechatSyncItem | WechatStatusItem | undefined | null | void> =
+        new vscode.EventEmitter<BookItem | AddBookItem | WechatLoginItem | WechatSyncItem | WechatStatusItem | undefined | null | void>();
+    readonly onDidChangeTreeData: vscode.Event<BookItem | AddBookItem | WechatLoginItem | WechatSyncItem | WechatStatusItem | undefined | null | void> =
         this._onDidChangeTreeData.event;
 
     constructor(private state: ReadPluginState) {}
@@ -318,16 +406,34 @@ class BooksTreeDataProvider implements vscode.TreeDataProvider<BookItem | AddBoo
         this._onDidChangeTreeData.fire();
     }
 
-    getTreeItem(element: BookItem | AddBookItem): vscode.TreeItem {
+    getTreeItem(element: BookItem | AddBookItem | WechatLoginItem | WechatSyncItem | WechatStatusItem): vscode.TreeItem {
         return element;
     }
 
-    getChildren(element?: any): Thenable<(BookItem | AddBookItem)[]> {
+    getChildren(element?: any): Thenable<(BookItem | AddBookItem | WechatLoginItem | WechatSyncItem | WechatStatusItem)[]> {
         if (!element) {
+            const items: (BookItem | AddBookItem | WechatLoginItem | WechatSyncItem | WechatStatusItem)[] = [];
+
+            // 添加添加书籍项
+            items.push(new AddBookItem());
+
+            // 添加微信读书相关项
+            const settings = this.state.getSettings();
+            if (settings.wechatReadToken && settings.wechatReadUserId) {
+                items.push(new WechatStatusItem('LoggedIn'));
+                items.push(new WechatSyncItem());
+            } else {
+                items.push(new WechatStatusItem('Not Logged In'));
+                items.push(new WechatLoginItem());
+            }
+
+            // 添加书籍列表
             const books = this.state.getBooks()
                 .sort((a, b) => (b.lastReadTime || 0) - (a.lastReadTime || 0))
                 .map(book => new BookItem(book));
-            return Promise.resolve([new AddBookItem(), ...books]);
+            items.push(...books);
+
+            return Promise.resolve(items);
         }
         return Promise.resolve([]);
     }
@@ -341,7 +447,7 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
     private _state: ReadPluginState;
     private _treeDataProvider?: BooksTreeDataProvider;
     private _eventManager: EventManager;
-    private _isLoading: boolean = false;
+
 
     constructor(
         private readonly _extensionContext: vscode.ExtensionContext,
@@ -398,32 +504,51 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
     }
 
     private async _handleWebviewMessage(data: WebViewMessage): Promise<void> {
+        console.log('Received message from webview:', data);
         if (!this._view) {
+            console.log('No view available, ignoring message');
             return;
         }
 
         switch (data.type) {
             case 'updateProgress':
                 if (this._currentBook && data.progress !== undefined) {
+                    console.log('Updating book progress:', { bookId: this._currentBook.id, progress: data.progress });
                     this._state.updateBookProgress(this._currentBook.id, data.progress);
                     this._treeDataProvider?.refreshBook(this._currentBook.id);
                 }
                 break;
 
             case 'increaseFontSize':
-                this._state.increaseFontSize();
-                this._updateFontSize(data.scrollPosition);
+                if (this._currentBook) {
+                    console.log('Increasing font size for book:', this._currentBook.id);
+                    const newSize = this._state.increaseFontSize();
+                    console.log('New font size:', newSize);
+                    this._updateFontSize(data.scrollPosition);
+                } else {
+                    console.log('No current book for increaseFontSize');
+                }
                 break;
 
             case 'decreaseFontSize':
-                this._state.decreaseFontSize();
-                this._updateFontSize(data.scrollPosition);
+                if (this._currentBook) {
+                    console.log('Decreasing font size for book:', this._currentBook.id);
+                    const newSize = this._state.decreaseFontSize();
+                    console.log('New font size:', newSize);
+                    this._updateFontSize(data.scrollPosition);
+                } else {
+                    console.log('No current book for decreaseFontSize');
+                }
                 break;
 
             case 'setFontSize':
-                if (data.fontSize !== undefined) {
-                    this._state.setFontSize(data.fontSize);
+                if (this._currentBook && data.fontSize !== undefined) {
+                    console.log('Setting font size for book:', { bookId: this._currentBook.id, fontSize: data.fontSize });
+                    const newSize = this._state.setFontSize(data.fontSize);
+                    console.log('New font size:', newSize);
                     this._updateFontSize(data.scrollPosition);
+                } else {
+                    console.log('No current book or fontSize for setFontSize');
                 }
                 break;
 
@@ -434,15 +559,28 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
                 break;
 
             case 'loadMoreContent':
-                if (this._currentBook &&
-                    data.bookId === this._currentBook.id &&
-                    !this._isLoading) {
-                    this._loadMoreContent(
-                        data.bookId,
-                        data.start,
-                        data.end,
-                        data.scrollPosition
-                    );
+                if (this._currentBook && data.start !== undefined && data.end !== undefined) {
+                    console.log('Loading more content:', { bookId: this._currentBook.id, start: data.start, end: data.end });
+                    try {
+                        const encoding = data.encoding || this._currentBook.encoding || 'utf8';
+                        const content = EncodingUtils.readFileWithEncoding(this._currentBook.path, data.start, data.end, encoding);
+                        const escapedContent = SecurityUtils.escapeHtml(content);
+
+                        this._view.webview.postMessage({
+                            type: 'moreContent',
+                            content: escapedContent,
+                            start: data.start,
+                            end: data.end,
+                            bookId: this._currentBook.id
+                        });
+                    } catch (error) {
+                        console.error('Failed to load more content:', error);
+                        this._view.webview.postMessage({
+                            type: 'contentError',
+                            error: (error as Error).message || 'Failed to load more content',
+                            bookId: this._currentBook.id
+                        });
+                    }
                 }
                 break;
 
@@ -451,84 +589,71 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
                     this._saveBookmark(data.position);
                 }
                 break;
+            case 'syncWechatProgress':
+                if (this._currentBook && this._currentBook.type === 'wechat' && this._currentBook.bookId) {
+                    this._syncWechatProgress(this._currentBook.id, this._currentBook.bookId);
+                }
+                break;
         }
     }
 
     openBook(book: Book): void {
+        console.log('Opening book:', { id: book.id, name: book.name, size: book.fileSize });
         this._currentBook = book;
         if (this._view) {
-            this._view.show?.(true);
-            this._view.webview.html = this._getHtmlForWebview(this._view.webview);
+            console.log('View available, updating HTML');
+            try {
+                const html = this._getHtmlForWebview(this._view.webview);
+                console.log('Generated HTML length:', html.length);
+                this._view.show?.(true);
+                this._view.webview.html = html;
+                console.log('Webview HTML updated successfully');
+            } catch (error) {
+                console.error('Error updating webview HTML:', error);
+            }
+        } else {
+            console.log('No view available for book:', book.id);
         }
     }
 
+    public refreshFontSize(): void {
+        this._updateFontSize();
+    }
+
     private _updateFontSize(scrollPosition?: number): void {
-        if (!this._view) {
+        if (!this._view || !this._currentBook) {
+            console.log('Cannot update font size:', { hasView: !!this._view, hasCurrentBook: !!this._currentBook });
             return;
         }
 
+        const fontSize = this._state.getFontSize();
+        console.log('Sending updateFontSize message:', { fontSize: fontSize, bookId: this._currentBook.id });
+
         this._view.webview.postMessage({
             type: 'updateFontSize',
-            fontSize: this._state.getFontSize()
+            fontSize: fontSize,
+            bookId: this._currentBook.id
         });
 
-        if (scrollPosition !== undefined) {
+        if (scrollPosition !== undefined && this._currentBook) {
+            const bookId = this._currentBook.id;
+            console.log('Scheduling scroll position restore:', { scrollPosition: scrollPosition, bookId: bookId });
             setTimeout(() => {
-                this._view?.webview.postMessage({
-                    type: 'restoreScrollPosition',
-                    scrollPosition: scrollPosition
-                });
+                if (this._view) {
+                    console.log('Sending restoreScrollPosition message:', { scrollPosition: scrollPosition, bookId: bookId });
+                    this._view.webview.postMessage({
+                        type: 'restoreScrollPosition',
+                        scrollPosition: scrollPosition,
+                        bookId: bookId
+                    });
+                } else {
+                    console.log('View no longer available for restoreScrollPosition');
+                }
             }, 100);
         }
     }
 
-    private async _loadMoreContent(
-        bookId: string,
-        start: number,
-        end: number,
-        scrollPosition?: number
-    ): Promise<void> {
-        if (!this._currentBook ||
-            this._currentBook.id !== bookId ||
-            this._isLoading) {
-            return;
-        }
 
-        this._isLoading = true;
-
-        try {
-            const encoding = this._currentBook.encoding || 'utf8';
-            const content = EncodingUtils.readFileWithEncoding(
-                this._currentBook.path,
-                start,
-                end,
-                encoding
-            );
-
-            const escapedContent = SecurityUtils.escapeHtml(content);
-
-            if (this._view) {
-                this._view.webview.postMessage({
-                    type: 'contentLoaded',
-                    content: escapedContent,
-                    start: start,
-                    end: end,
-                    scrollPosition: scrollPosition
-                });
-            }
-        } catch (error) {
-            console.error('Failed to load more content:', error);
-
-            if (this._view) {
-                this._view.webview.postMessage({
-                    type: 'contentError',
-                    error: 'Failed to load content'
-                });
-            }
-        } finally {
-            this._isLoading = false;
-        }
-    }
 
     private async _loadPdfFile(bookId: string): Promise<void> {
         if (!this._currentBook || this._currentBook.id !== bookId) {
@@ -539,19 +664,21 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
             const pdfData = fs.readFileSync(this._currentBook.path);
             const base64Data = pdfData.toString('base64');
 
-            if (this._view) {
+            if (this._view && this._currentBook) {
                 this._view.webview.postMessage({
                     type: 'pdfData',
-                    data: base64Data
+                    data: base64Data,
+                    bookId: this._currentBook.id
                 });
             }
         } catch (error) {
             console.error('Failed to load PDF file:', error);
 
-            if (this._view) {
+            if (this._view && this._currentBook) {
                 this._view.webview.postMessage({
                     type: 'pdfError',
-                    error: (error as Error).message || 'Failed to load PDF'
+                    error: (error as Error).message || 'Failed to load PDF',
+                    bookId: this._currentBook.id
                 });
             }
         }
@@ -562,12 +689,44 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
         console.log('Save bookmark:', position);
     }
 
+    private async _syncWechatProgress(bookId: string, _wechatBookId: string): Promise<void> {
+        try {
+            // 同步所有微信读书书籍的进度
+            await this._state.syncWechatBooks();
+            this._treeDataProvider?.refresh();
+
+            if (this._view) {
+                this._view.webview.postMessage({
+                    type: 'progressSynced',
+                    bookId: bookId,
+                    message: 'Reading progress synced successfully'
+                });
+            }
+
+            vscode.window.showInformationMessage('WeChat Read progress synced successfully');
+        } catch (error) {
+            console.error('Failed to sync WeChat progress:', error);
+            if (this._view) {
+                this._view.webview.postMessage({
+                    type: 'progressSyncError',
+                    bookId: bookId,
+                    error: 'Failed to sync reading progress'
+                });
+            }
+            vscode.window.showErrorMessage('Failed to sync WeChat Read progress');
+        }
+    }
+
     private _getHtmlForWebview(_webview: vscode.Webview): string {
         const themeColors = ThemeUtils.getThemeColors();
         const settings = this._state.getSettings();
 
         if (!this._currentBook) {
             return this._getEmptyStateHtml(themeColors);
+        }
+
+        if (this._currentBook.type === 'wechat') {
+            return this._getWechatHtml(this._currentBook, themeColors, settings);
         }
 
         const ext = path.extname(this._currentBook.path).toLowerCase();
@@ -835,20 +994,6 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
                 <div id="pdf-container">
                     <div class="pdf-header">
                         <div class="book-title">${SecurityUtils.escapeHtml(book.name)}</div>
-                        <div class="pdf-controls">
-                            <button id="prev-page" class="control-btn">← Prev</button>
-                            <div class="page-navigation">
-                                <input type="number" id="page-input" class="page-input" min="1" value="1">
-                                <span class="page-info">of <span id="total-pages">?</span></span>
-                            </div>
-                            <button id="next-page" class="control-btn">Next →</button>
-
-                            <div class="zoom-controls">
-                                <button id="zoom-out" class="control-btn">-</button>
-                                <span id="zoom-value" class="zoom-value">150%</span>
-                                <button id="zoom-in" class="control-btn">+</button>
-                            </div>
-                        </div>
                     </div>
 
                     <div id="pdf-canvas-container">
@@ -857,9 +1002,20 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
                     </div>
                 </div>
 
+                <!-- 右侧控制按钮 -->
+                <div style="position: fixed; right: 20px; top: 50%; transform: translateY(-50%); z-index: 1000; display: flex; flex-direction: column; gap: 10px; opacity: 0.5; transition: opacity 0.2s;">
+                    <div style="padding: 10px; border: 1px solid ${themeColors.borderColor}; border-radius: 5px; background-color: ${themeColors.backgroundColor === '#1e1e1e' ? 'rgba(51, 51, 51, 0.8)' : 'rgba(240, 240, 240, 0.8)'};
+                        color: ${themeColors.textColor}; font-size: 14px; text-align: center; min-width: 60px;">Page <span id="current-page-display">1</span>/<span id="total-pages-display">?</span></div>
+                    <button id="prev-page" style="padding: 10px; border: 1px solid ${themeColors.borderColor}; border-radius: 5px; background-color: ${themeColors.backgroundColor === '#1e1e1e' ? 'rgba(51, 51, 51, 0.8)' : 'rgba(240, 240, 240, 0.8)'};
+                        color: ${themeColors.textColor}; cursor: pointer; font-size: 14px;">←</button>
+                    <button id="next-page" style="padding: 10px; border: 1px solid ${themeColors.borderColor}; border-radius: 5px; background-color: ${themeColors.backgroundColor === '#1e1e1e' ? 'rgba(51, 51, 51, 0.8)' : 'rgba(240, 240, 240, 0.8)'};
+                        color: ${themeColors.textColor}; cursor: pointer; font-size: 14px;">→</button>
+                </div>
+
                 <script>
                     const vscode = acquireVsCodeApi();
                     const isDarkTheme = ${themeColors.backgroundColor === '#1e1e1e'};
+                    const currentBookId = '${book.id}';
 
                     // PDF状态
                     let pdfDoc = null;
@@ -872,9 +1028,8 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
                     const canvas = document.getElementById('pdf-canvas');
                     const ctx = canvas.getContext('2d');
                     const loadingEl = document.getElementById('loading');
-                    const pageInput = document.getElementById('page-input');
-                    const totalPagesEl = document.getElementById('total-pages');
-                    const zoomValueEl = document.getElementById('zoom-value');
+                    const currentPageDisplay = document.getElementById('current-page-display');
+                    const totalPagesDisplay = document.getElementById('total-pages-display');
 
                     // 初始化
                     loadPDF();
@@ -894,6 +1049,12 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
                     window.addEventListener('message', async event => {
                         const message = event.data;
 
+                        // 检查消息是否包含bookId，并且是否匹配当前书籍
+                        if (message.bookId && message.bookId !== currentBookId) {
+                            // 忽略非当前书籍的消息
+                            return;
+                        }
+
                         if (message.type === 'pdfData') {
                             try {
                                 const binaryString = atob(message.data);
@@ -912,8 +1073,8 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
 
                                 pdfDoc = await loadingTask.promise;
                                 totalPages = pdfDoc.numPages;
-                                totalPagesEl.textContent = totalPages;
-                                pageInput.max = totalPages;
+                                currentPageDisplay.textContent = currentPage;
+                                totalPagesDisplay.textContent = totalPages;
                                 loadingEl.style.display = 'none';
 
                                 await renderPage(currentPage);
@@ -933,7 +1094,7 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
 
                         isRendering = true;
                         currentPage = pageNum;
-                        pageInput.value = currentPage;
+                        currentPageDisplay.textContent = currentPage;
 
                         try {
                             const page = await pdfDoc.getPage(pageNum);
@@ -953,47 +1114,42 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
 
                             await page.render(renderContext).promise;
 
-                            // 暗色主题处理
+                            // 暗色主题反色处理
                             if (isDarkTheme) {
                                 const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
                                 const data = imageData.data;
 
                                 for (let i = 0; i < data.length; i += 4) {
-                                    // 反转颜色
+                                    // 反转RGB颜色
                                     data[i] = 255 - data[i];     // R
                                     data[i + 1] = 255 - data[i + 1]; // G
                                     data[i + 2] = 255 - data[i + 2]; // B
+                                    // 保持透明度不变
                                 }
 
                                 ctx.putImageData(imageData, 0, 0);
                             }
-
-                            // 更新缩放显示
-                            zoomValueEl.textContent = Math.round(zoom * 100) + '%';
-
                         } catch (error) {
                             console.error('Error rendering page:', error);
-                            showError('Failed to render page');
+                            showError('Failed to render page ' + pageNum);
                         } finally {
                             isRendering = false;
                         }
                     }
 
                     function updateProgress() {
-                        const progress = (currentPage / totalPages) * 100;
-                        const formattedProgress = Math.round(progress * 100) / 100;
-                        vscode.postMessage({
-                            type: 'updateProgress',
-                            progress: formattedProgress
-                        });
+                        if (totalPages > 0) {
+                            const progress = (currentPage / totalPages) * 100;
+                            vscode.postMessage({ type: 'updateProgress', progress: progress, bookId: currentBookId });
+                        }
                     }
 
                     function showError(message) {
-                        loadingEl.textContent = 'Error: ' + message;
-                        loadingEl.style.color = '#ff6b6b';
+                        loadingEl.textContent = message;
+                        loadingEl.style.color = 'red';
                     }
 
-                    // 事件绑定
+                    // 事件监听
                     document.getElementById('prev-page').addEventListener('click', () => {
                         if (currentPage > 1) {
                             renderPage(currentPage - 1);
@@ -1006,68 +1162,10 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
                         }
                     });
 
-                    document.getElementById('zoom-in').addEventListener('click', () => {
-                        zoom *= 1.2;
-                        renderPage(currentPage);
-                    });
+                    // 页面输入功能已移除，改为右侧按钮控制
 
-                    document.getElementById('zoom-out').addEventListener('click', () => {
-                        zoom = Math.max(0.5, zoom / 1.2);
-                        renderPage(currentPage);
-                    });
+                    // 缩放控制已移除
 
-                    pageInput.addEventListener('change', () => {
-                        const page = parseInt(pageInput.value);
-                        if (page >= 1 && page <= totalPages && page !== currentPage) {
-                            renderPage(page);
-                        } else {
-                            pageInput.value = currentPage;
-                        }
-                    });
-
-                    pageInput.addEventListener('keypress', (e) => {
-                        if (e.key === 'Enter') {
-                            pageInput.blur();
-                        }
-                    });
-
-                    // 键盘快捷键
-                    document.addEventListener('keydown', (e) => {
-                        if (e.target === pageInput) return;
-
-                        switch(e.key) {
-                            case 'ArrowLeft':
-                            case 'PageUp':
-                                if (currentPage > 1) {
-                                    e.preventDefault();
-                                    renderPage(currentPage - 1);
-                                }
-                                break;
-                            case 'ArrowRight':
-                            case 'PageDown':
-                            case ' ':
-                                if (currentPage < totalPages) {
-                                    e.preventDefault();
-                                    renderPage(currentPage + 1);
-                                }
-                                break;
-                            case '+':
-                            case '=':
-                                if (e.ctrlKey || e.metaKey) {
-                                    e.preventDefault();
-                                    zoom *= 1.2;
-                                    renderPage(currentPage);
-                                }
-                                break;
-                            case '-':
-                                if (e.ctrlKey || e.metaKey) {
-                                    e.preventDefault();
-                                    zoom = Math.max(0.5, zoom / 1.2);
-                                    renderPage(currentPage);
-                                }
-                                break;
-                        }
-                    });
                 </script>
             </body>
             </html>
@@ -1075,25 +1173,25 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
     }
 
     private _getTextHtml(book: Book, themeColors: any, settings: PluginSettings): string {
-        const fontSize = settings.fontSize;
-        const lineHeight = settings.lineHeight;
+        const CHUNK_SIZE = 1024 * 1024; // 1MB
+        const isChunked = book.fileSize > CHUNK_SIZE;
+        let content = '';
+        let encoding = book.encoding || 'utf8';
 
-        // 计算初始加载范围
-        const fileSize = book.fileSize;
-        const chunkSize = 50 * 1024; // 50KB
-        const initialStart = Math.floor((book.progress / 100) * fileSize);
-        const start = Math.max(0, initialStart - chunkSize);
-        const end = Math.min(fileSize, initialStart + chunkSize * 2);
-
-        // 读取初始内容
-        let initialContent = 'Failed to load book content';
         try {
-            const encoding = book.encoding || 'utf8';
-            const content = EncodingUtils.readFileWithEncoding(book.path, start, end, encoding);
-            initialContent = SecurityUtils.escapeHtml(content);
+            if (isChunked) {
+                content = EncodingUtils.readFileWithEncoding(book.path, 0, CHUNK_SIZE, encoding);
+            } else {
+                content = EncodingUtils.readFileWithEncoding(book.path, 0, book.fileSize, encoding);
+            }
         } catch (error) {
-            console.error('Failed to read initial content:', error);
+            console.error('Failed to read book content:', error);
+            vscode.window.showErrorMessage(`Failed to read book: ${(error as Error).message}`);
+            return this._getEmptyStateHtml(themeColors);
         }
+
+        const escapedContent = SecurityUtils.escapeHtml(content);
+        const fontSize = settings.fontSize;
 
         return `
             <!DOCTYPE html>
@@ -1103,665 +1201,366 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <title>${SecurityUtils.escapeHtml(book.name)}</title>
                 <style>
-                    * {
-                        margin: 0;
-                        padding: 0;
-                        box-sizing: border-box;
-                    }
-
                     body {
                         font-family: ${settings.fontFamily};
                         background-color: ${themeColors.backgroundColor};
                         color: ${themeColors.textColor};
-                        line-height: ${lineHeight};
-                        transition: all 0.3s;
+                        padding: 20px;
                         font-size: ${fontSize}px;
-                    }
-
-                    .book-container {
-                        max-width: 800px;
-                        margin: 0 auto;
-                        padding: 40px 20px;
-                    }
-
-                    .book-header {
-                        margin-bottom: 32px;
-                        padding-bottom: 16px;
-                        border-bottom: 1px solid ${themeColors.borderColor};
-                    }
-
-                    .book-title {
-                        font-size: 24px;
-                        font-weight: 700;
-                        color: ${themeColors.textColor};
-                        margin-bottom: 8px;
-                        word-break: break-word;
-                    }
-
-                    .book-meta {
-                        font-size: 14px;
-                        color: ${themeColors.mutedColor};
-                        display: flex;
-                        justify-content: space-between;
-                        align-items: center;
-                        flex-wrap: wrap;
-                        gap: 12px;
-                    }
-
-                    .book-content {
-                        background-color: ${themeColors.backgroundColor === '#1e1e1e' ? '#252526' : '#ffffff'};
-                        border-radius: 12px;
-                        padding: 32px;
-                        box-shadow: 0 4px 16px ${themeColors.backgroundColor === '#1e1e1e' ? 'rgba(0,0,0,0.2)' : 'rgba(0,0,0,0.08)'};
+                        line-height: ${settings.lineHeight};
                         transition: all 0.3s;
-                        position: relative;
-                        white-space: pre-wrap;
-                        word-wrap: break-word;
                         overflow-wrap: break-word;
+                        white-space: pre-wrap;
                     }
-
-                    .content-text {
-                        font-size: ${fontSize}px;
-                        line-height: ${lineHeight};
-                        transition: font-size 0.3s;
-                        min-height: 400px;
+                    #content {
+                        height: 100vh;
+                        overflow-y: auto;
+                        padding-right: 15px;
                     }
-
-                    .font-controls-fixed {
-                        position: fixed;
-                        top: 50%;
-                        right: 20px;
-                        transform: translateY(-50%);
-                        display: flex;
-                        flex-direction: column;
-                        gap: 12px;
-                        z-index: 1000;
-                        background-color: ${themeColors.backgroundColor === '#1e1e1e' ? 'rgba(37, 37, 38, 0.95)' : 'rgba(255, 255, 255, 0.95)'};
-                        padding: 16px;
-                        border-radius: 12px;
-                        box-shadow: 0 4px 20px ${themeColors.backgroundColor === '#1e1e1e' ? 'rgba(0, 0, 0, 0.3)' : 'rgba(0, 0, 0, 0.1)'};
-                        backdrop-filter: blur(10px);
-                        border: 1px solid ${themeColors.borderColor};
-                    }
-
-                    .font-btn {
-                        background-color: ${themeColors.backgroundColor === '#1e1e1e' ? '#333' : '#f5f5f5'};
-                        color: ${themeColors.textColor};
-                        border: 1px solid ${themeColors.borderColor};
-                        border-radius: 8px;
-                        padding: 12px;
-                        font-size: 16px;
-                        font-weight: 600;
-                        cursor: pointer;
-                        transition: all 0.2s;
-                        width: 48px;
-                        height: 48px;
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        user-select: none;
-                    }
-
-                    .font-btn:hover {
-                        background-color: ${themeColors.backgroundColor === '#1e1e1e' ? '#444' : '#e8e8e8'};
-                        transform: translateY(-2px);
-                        box-shadow: 0 4px 8px ${themeColors.backgroundColor === '#1e1e1e' ? 'rgba(0,0,0,0.2)' : 'rgba(0,0,0,0.1)'};
-                    }
-
-                    .font-btn:active {
-                        transform: translateY(0);
-                    }
-
-                    .font-size-display {
-                        text-align: center;
-                        font-size: 12px;
-                        color: ${themeColors.mutedColor};
-                        margin-top: 4px;
-                        font-weight: 500;
-                    }
-
                     .loading-indicator {
-                        text-align: center;
-                        padding: 32px;
-                        color: ${themeColors.mutedColor};
-                        font-style: italic;
-                        font-size: 14px;
                         display: none;
-                    }
-
-                    .progress-indicator {
-                        position: fixed;
-                        bottom: 20px;
-                        right: 20px;
-                        background-color: ${themeColors.backgroundColor === '#1e1e1e' ? 'rgba(37, 37, 38, 0.95)' : 'rgba(255, 255, 255, 0.95)'};
-                        padding: 8px 16px;
-                        border-radius: 20px;
-                        font-size: 12px;
+                        text-align: center;
+                        padding: 20px;
                         color: ${themeColors.mutedColor};
-                        border: 1px solid ${themeColors.borderColor};
-                        backdrop-filter: blur(10px);
-                        z-index: 999;
-                    }
-
-                    .chapter-navigation {
-                        position: fixed;
-                        bottom: 20px;
-                        left: 50%;
-                        transform: translateX(-50%);
-                        display: flex;
-                        gap: 12px;
-                        background-color: ${themeColors.backgroundColor === '#1e1e1e' ? 'rgba(37, 37, 38, 0.95)' : 'rgba(255, 255, 255, 0.95)'};
-                        padding: 8px 16px;
-                        border-radius: 20px;
-                        backdrop-filter: blur(10px);
-                        border: 1px solid ${themeColors.borderColor};
-                        z-index: 999;
-                    }
-
-                    .nav-btn {
-                        background: none;
-                        border: none;
-                        color: ${themeColors.textColor};
-                        cursor: pointer;
-                        padding: 4px 12px;
-                        border-radius: 4px;
-                        font-size: 14px;
-                        transition: background-color 0.2s;
-                    }
-
-                    .nav-btn:hover {
-                        background-color: ${themeColors.backgroundColor === '#1e1e1e' ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)'};
-                    }
-
-                    @media (max-width: 768px) {
-                        .book-container {
-                            padding: 20px 16px;
-                        }
-
-                        .book-content {
-                            padding: 24px;
-                        }
-
-                        .font-controls-fixed {
-                            right: 10px;
-                            padding: 12px;
-                        }
-
-                        .font-btn {
-                            width: 40px;
-                            height: 40px;
-                            font-size: 14px;
-                        }
-
-                        .chapter-navigation {
-                            bottom: 10px;
-                            padding: 6px 12px;
-                        }
-
-                        .progress-indicator {
-                            bottom: 10px;
-                            right: 10px;
-                        }
-                    }
-
-                    @media (max-width: 480px) {
-                        .book-title {
-                            font-size: 20px;
-                        }
-
-                        .book-meta {
-                            flex-direction: column;
-                            align-items: flex-start;
-                            gap: 8px;
-                        }
-
-                        .font-controls-fixed {
-                            flex-direction: row;
-                            top: auto;
-                            bottom: 80px;
-                            right: 50%;
-                            transform: translateX(50%);
-                            padding: 8px 16px;
-                        }
-
-                        .font-btn {
-                            width: 36px;
-                            height: 36px;
-                        }
                     }
                 </style>
             </head>
             <body>
-                <div class="book-container">
-                    <div class="book-header">
-                        <h1 class="book-title">${SecurityUtils.escapeHtml(book.name)}</h1>
-                        <div class="book-meta">
-                            <span>${this._formatFileSize(book.fileSize)} • ${new Date(book.addedTime).toLocaleDateString()}</span>
-                            <span>Progress: ${Math.round(book.progress * 100) / 100}%</span>
-                        </div>
-                    </div>
-
-                    <div class="book-content">
-                        <div id="content" class="content-text"
-                             data-start="${start}"
-                             data-end="${end}"
-                             data-total="${fileSize}">
-                            ${initialContent}
-                        </div>
-                        <div id="loading" class="loading-indicator">Loading more content...</div>
-                    </div>
+                <div id="content">
+                    <div id="text-container">${escapedContent}</div>
+                    <div id="loading-indicator" class="loading-indicator">Loading more...</div>
                 </div>
 
-                <div class="font-controls-fixed">
-                    <button id="decrease-font" class="font-btn" title="Decrease font size (Ctrl+-)">
-                        A−
-                    </button>
-                    <div class="font-size-display" id="font-size-display">${fontSize}px</div>
-                    <button id="increase-font" class="font-btn" title="Increase font size (Ctrl+=)">
-                        A+
-                    </button>
-                </div>
-
-                <div class="progress-indicator" id="progress-indicator">
-                    ${Math.round(book.progress * 100) / 100}%
+                <!-- 字体调节按钮 -->
+                <div style="position: fixed; right: 20px; top: 50%; transform: translateY(-50%); z-index: 1000; display: flex; flex-direction: column; gap: 10px;">
+                    <button onclick="decreaseFontSize()" style="padding: 10px; border: 1px solid ${themeColors.borderColor}; border-radius: 5px; background-color: ${themeColors.backgroundColor === '#1e1e1e' ? '#333' : '#f0f0f0'}; color: ${themeColors.textColor}; cursor: pointer; font-size: 14px;">A-</button>
+                    <div id="fontSizeDisplay" style="padding: 10px; border: 1px solid ${themeColors.borderColor}; border-radius: 5px; background-color: ${themeColors.backgroundColor === '#1e1e1e' ? '#333' : '#f0f0f0'}; color: ${themeColors.textColor}; font-size: 14px; text-align: center; min-width: 40px;">${fontSize}px</div>
+                    <button onclick="increaseFontSize()" style="padding: 10px; border: 1px solid ${themeColors.borderColor}; border-radius: 5px; background-color: ${themeColors.backgroundColor === '#1e1e1e' ? '#333' : '#f0f0f0'}; color: ${themeColors.textColor}; cursor: pointer; font-size: 14px;">A+</button>
                 </div>
 
                 <script>
                     const vscode = acquireVsCodeApi();
-                    const isDarkTheme = ${themeColors.backgroundColor === '#1e1e1e'};
+                    const contentElement = document.getElementById('content');
+                    const textContainer = document.getElementById('text-container');
+                    const loadingIndicator = document.getElementById('loading-indicator');
 
-                    // 书籍信息
-                    const bookInfo = {
-                        id: '${book.id}',
-                        filePath: '${SecurityUtils.escapeHtml(book.path)}',
-                        fileSize: ${fileSize},
-                        chunkSize: ${chunkSize},
-                        encoding: '${book.encoding || 'utf8'}'
-                    };
+                    const currentBookId = '${book.id}';
 
-                    // 状态
-                    let currentFontSize = ${fontSize};
+                    // 字体调节函数
+                    function decreaseFontSize() {
+                        vscode.postMessage({ type: 'decreaseFontSize', bookId: currentBookId });
+                    }
+
+                    function increaseFontSize() {
+                        vscode.postMessage({ type: 'increaseFontSize', bookId: currentBookId });
+                    }
+                    const isChunked = ${isChunked};
+                    const totalSize = ${book.fileSize};
+                    let loadedSize = ${isChunked ? CHUNK_SIZE : book.fileSize};
                     let isLoading = false;
-                    let lastScrollTime = 0;
-                    let lastProgress = ${book.progress};
+                    let isScrolling = false;
 
-                    // 元素
-                    const contentEl = document.getElementById('content');
-                    const loadingEl = document.getElementById('loading');
-                    const progressIndicator = document.getElementById('progress-indicator');
-                    const fontSizeDisplay = document.getElementById('font-size-display');
+                    const targetProgress = ${book.progress};
+                    const targetOffset = Math.floor((targetProgress / 100) * totalSize);
+                    let pendingRestore = isChunked && targetProgress > 0;
 
-                    // 防抖函数
-                    function debounce(func, wait) {
-                        let timeout;
-                        return function executedFunction(...args) {
-                            const later = () => {
-                                clearTimeout(timeout);
-                                func(...args);
-                            };
-                            clearTimeout(timeout);
-                            timeout = setTimeout(later, wait);
-                        };
+                    function calculateProgress() {
+                        const scrollRange = contentElement.scrollHeight - contentElement.clientHeight;
+                        const ratio = scrollRange > 0 ? contentElement.scrollTop / scrollRange : 0;
+                        const estimatedOffset = Math.min(loadedSize, Math.max(0, loadedSize * ratio));
+                        const progress = totalSize > 0 ? (estimatedOffset / totalSize) * 100 : 0;
+                        return Math.max(0, Math.min(100, progress));
                     }
 
-                    // 保存滚动位置
-                    function saveScrollPosition() {
-                        return {
-                            top: window.scrollY,
-                            height: document.documentElement.scrollHeight,
-                            clientHeight: window.innerHeight
-                        };
-                    }
-
-                    // 恢复滚动位置
-                    function restoreScrollPosition(position) {
-                        if (position && position.top !== undefined) {
-                            window.scrollTo(0, position.top);
+                    function updateProgress() {
+                        if (!isScrolling) {
+                            const progress = calculateProgress();
+                            vscode.postMessage({ type: 'updateProgress', progress: progress, bookId: currentBookId });
                         }
                     }
 
-                    // 更新字体大小
-                    function updateFontSize(size) {
-                        currentFontSize = size;
-                        contentEl.style.fontSize = size + 'px';
-                        fontSizeDisplay.textContent = size + 'px';
-
-                        // 保存到localStorage
-                        localStorage.setItem('readplugin-fontsize-' + bookInfo.id, size.toString());
+                    function restoreScrollForNonChunked() {
+                        const scrollRange = contentElement.scrollHeight - contentElement.clientHeight;
+                        if (scrollRange > 0) {
+                            contentElement.scrollTop = scrollRange * (targetProgress / 100);
+                        }
                     }
 
-                    // 更新进度
-                    const updateProgress = debounce(function() {
-                        const scrollTop = window.scrollY;
-                        const scrollHeight = document.documentElement.scrollHeight - window.innerHeight;
+                    function tryRestoreForChunked() {
+                        if (!pendingRestore) {
+                            return;
+                        }
+                        if (loadedSize < targetOffset && !isLoading && loadedSize < totalSize) {
+                            loadMore();
+                            return;
+                        }
+                        const scrollRange = contentElement.scrollHeight - contentElement.clientHeight;
+                        if (scrollRange > 0) {
+                            const ratio = loadedSize > 0 ? Math.min(1, targetOffset / loadedSize) : 0;
+                            contentElement.scrollTop = scrollRange * ratio;
+                            pendingRestore = false;
+                        }
+                    }
 
-                        if (scrollHeight > 0) {
-                            const progress = Math.min(100, Math.max(0, (scrollTop / scrollHeight) * 100));
-                            const formattedProgress = Math.round(progress * 100) / 100;
+                    if (isChunked) {
+                        setTimeout(() => {
+                            tryRestoreForChunked();
+                        }, 0);
+                    } else {
+                        restoreScrollForNonChunked();
+                    }
 
-                            if (Math.abs(formattedProgress - lastProgress) >= 0.1) {
-                                lastProgress = formattedProgress;
-                                progressIndicator.textContent = formattedProgress + '%';
+                    // 滚动事件
+                    let scrollTimeout;
+                    contentElement.addEventListener('scroll', () => {
+                        isScrolling = true;
+                        clearTimeout(scrollTimeout);
+                        scrollTimeout = setTimeout(() => {
+                            isScrolling = false;
+                            updateProgress();
+                        }, 150);
 
-                                vscode.postMessage({
-                                    type: 'updateProgress',
-                                    progress: formattedProgress
-                                });
+                        if (isChunked && !isLoading && loadedSize < totalSize) {
+                            if (contentElement.scrollTop + contentElement.clientHeight >= contentElement.scrollHeight - 200) {
+                                loadMore();
                             }
                         }
-                    }, 1000);
+                    });
 
-                    // 加载更多内容
-                    async function loadMoreContent(direction) {
-                        if (isLoading) return;
-
+                    function loadMore() {
                         isLoading = true;
-                        loadingEl.style.display = 'block';
-                        const scrollPosition = saveScrollPosition();
+                        loadingIndicator.style.display = 'block';
+                        const start = loadedSize;
+                        const end = Math.min(loadedSize + ${CHUNK_SIZE}, totalSize);
 
-                        try {
-                            const currentStart = parseInt(contentEl.dataset.start);
-                            const currentEnd = parseInt(contentEl.dataset.end);
-                            let newStart = currentStart;
-                            let newEnd = currentEnd;
-
-                            if (direction === 'up' && currentStart > 0) {
-                                newStart = Math.max(0, currentStart - bookInfo.chunkSize);
-                            } else if (direction === 'down' && currentEnd < bookInfo.fileSize) {
-                                newEnd = Math.min(bookInfo.fileSize, currentEnd + bookInfo.chunkSize);
-                            } else {
-                                return;
-                            }
-
-                            vscode.postMessage({
-                                type: 'loadMoreContent',
-                                bookId: bookInfo.id,
-                                start: newStart,
-                                end: newEnd,
-                                scrollPosition: scrollPosition
-                            });
-
-                        } catch (error) {
-                            console.error('Failed to load more content:', error);
-                            loadingEl.textContent = 'Error loading content';
-                        }
+                        vscode.postMessage({
+                            type: 'loadMoreContent',
+                            start: start,
+                            end: end,
+                            encoding: '${encoding}',
+                            bookId: currentBookId
+                        });
                     }
 
-                    // 事件监听
-                    document.getElementById('increase-font').addEventListener('click', () => {
-                        const scrollPosition = saveScrollPosition();
-                        vscode.postMessage({
-                            type: 'increaseFontSize',
-                            scrollPosition: scrollPosition
-                        });
-                    });
-
-                    document.getElementById('decrease-font').addEventListener('click', () => {
-                        const scrollPosition = saveScrollPosition();
-                        vscode.postMessage({
-                            type: 'decreaseFontSize',
-                            scrollPosition: scrollPosition
-                        });
-                    });
-
-                    // 滚动事件 - 防抖处理
-                    const handleScroll = debounce(function() {
-                        updateProgress();
-
-                        // 检测是否需要加载更多内容
-                        const scrollTop = window.scrollY;
-                        const scrollHeight = document.documentElement.scrollHeight;
-                        const clientHeight = window.innerHeight;
-                        const threshold = 500;
-
-                        if (scrollTop < threshold) {
-                            loadMoreContent('up');
-                        } else if (scrollTop > scrollHeight - clientHeight - threshold) {
-                            loadMoreContent('down');
-                        }
-                    }, 200);
-
-                    window.addEventListener('scroll', handleScroll);
-
-                    // 键盘快捷键
-                    document.addEventListener('keydown', (e) => {
-                        if (e.ctrlKey || e.metaKey) {
-                            switch(e.key) {
-                                case '=':
-                                case '+':
-                                    e.preventDefault();
-                                    const pos1 = saveScrollPosition();
-                                    vscode.postMessage({
-                                        type: 'increaseFontSize',
-                                        scrollPosition: pos1
-                                    });
-                                    break;
-                                case '-':
-                                    e.preventDefault();
-                                    const pos2 = saveScrollPosition();
-                                    vscode.postMessage({
-                                        type: 'decreaseFontSize',
-                                        scrollPosition: pos2
-                                    });
-                                    break;
-                            }
-                        }
-                    });
-
-                    // 消息监听
-                    window.addEventListener('message', (event) => {
+                    // 字体大小和滚动位置恢复
+                    window.addEventListener('message', event => {
                         const message = event.data;
+                        if (message.bookId !== currentBookId) return;
 
                         switch (message.type) {
-                            case 'contentLoaded':
-                                contentEl.innerHTML = message.content;
-                                contentEl.dataset.start = message.start;
-                                contentEl.dataset.end = message.end;
-                                loadingEl.style.display = 'none';
-                                isLoading = false;
-
-                                if (message.scrollPosition) {
-                                    restoreScrollPosition(message.scrollPosition);
-                                }
-                                break;
-
-                            case 'contentError':
-                                loadingEl.textContent = message.error || 'Error loading content';
-                                loadingEl.style.color = '#ff6b6b';
-                                isLoading = false;
-                                break;
-
                             case 'updateFontSize':
-                                updateFontSize(message.fontSize);
+                                const previousRange = contentElement.scrollHeight - contentElement.clientHeight;
+                                const previousRatio = previousRange > 0 ? contentElement.scrollTop / previousRange : 0;
+                                document.body.style.fontSize = message.fontSize + 'px';
+                                // 更新字体大小显示
+                                const fontSizeDisplay = document.getElementById('fontSizeDisplay');
+                                if (fontSizeDisplay) {
+                                    fontSizeDisplay.textContent = message.fontSize + 'px';
+                                }
+                                requestAnimationFrame(() => {
+                                    const newRange = contentElement.scrollHeight - contentElement.clientHeight;
+                                    contentElement.scrollTop = newRange * previousRatio;
+                                    if (pendingRestore) {
+                                        tryRestoreForChunked();
+                                    }
+                                    updateProgress();
+                                });
                                 break;
-
                             case 'restoreScrollPosition':
-                                restoreScrollPosition(message.scrollPosition);
+                                contentElement.scrollTop = message.scrollPosition;
+                                updateProgress();
+                                break;
+                            case 'moreContent':
+                                textContainer.innerHTML += message.content;
+                                loadedSize = message.end;
+                                isLoading = false;
+                                loadingIndicator.style.display = 'none';
+                                if (pendingRestore) {
+                                    tryRestoreForChunked();
+                                }
+                                updateProgress();
+                                break;
+                            case 'contentError':
+                                loadingIndicator.textContent = 'Error: ' + message.error;
+                                isLoading = false;
                                 break;
                         }
                     });
 
-                    // 初始加载
-                    window.addEventListener('load', () => {
-                        // 恢复字体大小
-                        const savedFontSize = localStorage.getItem('readplugin-fontsize-' + bookInfo.id);
-                        if (savedFontSize) {
-                            const size = parseInt(savedFontSize);
-                            if (!isNaN(size) && size >= 8 && size <= 48) {
-                                updateFontSize(size);
-                            }
-                        }
-
-                        // 滚动到上次阅读位置
-                        const progress = ${book.progress};
-                        if (progress > 0) {
-                            const scrollHeight = document.documentElement.scrollHeight - window.innerHeight;
-                            const scrollTop = (progress / 100) * scrollHeight;
-                            window.scrollTo(0, scrollTop);
-                        }
-
-                        // 初始进度更新
-                        updateProgress();
-                    });
                 </script>
             </body>
             </html>
         `;
     }
 
-    private _formatFileSize(bytes: number): string {
-        if (bytes === 0) {
-            return '0 Bytes';
-        }
-        const k = 1024;
-        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-    }
+    private _getWechatHtml(book: Book, themeColors: any, settings: PluginSettings): string {
+        const fontSize = settings.fontSize;
 
-    updateFontSize(scrollPosition?: number): void {
-        if (!this._view) {
-            return;
-        }
+        return `
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>${SecurityUtils.escapeHtml(book.name)}</title>
+                <style>
+                    body {
+                        font-family: ${settings.fontFamily};
+                        background-color: ${themeColors.backgroundColor};
+                        color: ${themeColors.textColor};
+                        padding: 20px;
+                        font-size: ${fontSize}px;
+                        line-height: ${settings.lineHeight};
+                        transition: all 0.3s;
+                    }
+                    .wechat-container {
+                        text-align: center;
+                        padding: 40px 20px;
+                    }
+                    .wechat-container h2 {
+                        font-size: 22px;
+                        margin-bottom: 12px;
+                    }
+                    .wechat-container p {
+                        font-size: 16px;
+                        color: ${themeColors.mutedColor};
+                        margin-bottom: 24px;
+                    }
+                    .sync-button {
+                        background-color: #07c160;
+                        color: white;
+                        border: none;
+                        border-radius: 5px;
+                        padding: 12px 24px;
+                        font-size: 16px;
+                        cursor: pointer;
+                        transition: background-color 0.2s;
+                    }
+                    .sync-button:hover {
+                        background-color: #06ad56;
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="wechat-container">
+                    <h2>${SecurityUtils.escapeHtml(book.name)}</h2>
+                    <p>This is a WeChat Read book. Content is not displayed here.</p>
+                    <button id="sync-progress" class="sync-button">Sync Progress</button>
+                </div>
+                <script>
+                    const vscode = acquireVsCodeApi();
+                    const currentBookId = '${book.id}';
 
-        this._view.webview.postMessage({
-            type: 'updateFontSize',
-            fontSize: this._state.getFontSize()
-        });
-
-        if (scrollPosition !== undefined) {
-            setTimeout(() => {
-                this._view?.webview.postMessage({
-                    type: 'restoreScrollPosition',
-                    scrollPosition: scrollPosition
-                });
-            }, 100);
-        }
-    }
-
-    dispose(): void {
-        this._eventManager.dispose();
+                    document.getElementById('sync-progress').addEventListener('click', () => {
+                        vscode.postMessage({
+                            type: 'syncWechatProgress',
+                            bookId: currentBookId
+                        });
+                    });
+                </script>
+            </body>
+            </html>
+        `;
     }
 }
 
-// 激活插件
-export function activate(context: vscode.ExtensionContext): void {
+export function activate(context: vscode.ExtensionContext) {
     console.log('Read Plugin is now active!');
 
-    // 初始化状态
+    // 状态管理
     const state = new ReadPluginState(context);
 
-    // 注册书籍视图
+    // 树数据提供者
     const booksTreeDataProvider = new BooksTreeDataProvider(state);
     vscode.window.registerTreeDataProvider('read-plugin-books', booksTreeDataProvider);
 
-    // 注册书籍内容视图
-    const bookContentProvider = new BookContentViewProvider(context, state);
-    bookContentProvider.setTreeDataProvider(booksTreeDataProvider);
-
-    const contentViewProvider = vscode.window.registerWebviewViewProvider(
-        BookContentViewProvider.viewType,
-        bookContentProvider
-    );
+    // 内容视图提供者
+    const bookContentViewProvider = new BookContentViewProvider(context, state);
+    bookContentViewProvider.setTreeDataProvider(booksTreeDataProvider);
+    vscode.window.registerWebviewViewProvider(BookContentViewProvider.viewType, bookContentViewProvider);
 
     // 注册命令
-    const commands = [
-        // 添加书籍
+    context.subscriptions.push(
         vscode.commands.registerCommand('readplugin.addBook', async () => {
-            const fileUri = await vscode.window.showOpenDialog({
-                canSelectFiles: true,
-                canSelectFolders: false,
-                canSelectMany: false,
+            const uris = await vscode.window.showOpenDialog({
+                canSelectMany: true,
+                openLabel: 'Add Book(s)',
                 filters: {
-                    'Books': ['txt', 'pdf'],
-                    'Text Files': ['txt'],
-                    'PDF Files': ['pdf']
-                },
-                openLabel: 'Add Book'
+                    'Books': ['txt', 'pdf']
+                }
             });
 
-            if (fileUri && fileUri[0]) {
-                try {
-                    const filePath = fileUri[0].fsPath;
-                    const book = state.addBook(filePath);
-                    booksTreeDataProvider.refresh();
-
-                    vscode.window.showInformationMessage(
-                        `Added book: ${book.name}`,
-                        'Open'
-                    ).then(choice => {
-                        if (choice === 'Open') {
-                            bookContentProvider.openBook(book);
-                        }
-                    });
-                } catch (error) {
-                    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-                    vscode.window.showErrorMessage(`Failed to add book: ${errorMessage}`);
+            if (uris) {
+                for (const uri of uris) {
+                    try {
+                        state.addBook(uri.fsPath);
+                    } catch (error) {
+                        // 错误已在addBook中处理
+                    }
                 }
+                booksTreeDataProvider.refresh();
             }
         }),
 
-        // 打开书籍
         vscode.commands.registerCommand('readplugin.openBook', (book: Book) => {
-            bookContentProvider.openBook(book);
+            bookContentViewProvider.openBook(book);
         }),
 
-        // 删除书籍
-        vscode.commands.registerCommand('readplugin.removeBook', async (bookItem: BookItem) => {
-            const choice = await vscode.window.showWarningMessage(
-                `Are you sure you want to remove "${bookItem.book.name}" from your library?`,
-                { modal: true },
-                'Remove',
-                'Cancel'
-            );
-
-            if (choice === 'Remove') {
-                const success = state.removeBook(bookItem.book.id);
-                if (success) {
+        vscode.commands.registerCommand('readplugin.removeBook', (item: BookItem) => {
+            if (item && item.book) {
+                const removed = state.removeBook(item.book.id);
+                if (removed) {
                     booksTreeDataProvider.refresh();
-                    vscode.window.showInformationMessage(`Removed book: ${bookItem.book.name}`);
+                    vscode.window.showInformationMessage(`Book removed: ${item.book.name}`);
                 }
             }
         }),
 
-        // 增加字体大小
         vscode.commands.registerCommand('readplugin.increaseFontSize', () => {
             state.increaseFontSize();
-            bookContentProvider.updateFontSize();
+            bookContentViewProvider.refreshFontSize();
         }),
 
-        // 减小字体大小
         vscode.commands.registerCommand('readplugin.decreaseFontSize', () => {
             state.decreaseFontSize();
-            bookContentProvider.updateFontSize();
+            bookContentViewProvider.refreshFontSize();
         }),
 
-        // 重置字体大小
-        vscode.commands.registerCommand('readplugin.resetFontSize', () => {
-            state.setFontSize(DEFAULT_SETTINGS.fontSize);
-            bookContentProvider.updateFontSize();
+        vscode.commands.registerCommand('readplugin.refreshBooks', () => {
+            booksTreeDataProvider.refresh();
         }),
 
-        // 打开设置
-        vscode.commands.registerCommand('readplugin.openSettings', () => {
-            vscode.commands.executeCommand('workbench.action.openSettings', 'readplugin');
+        vscode.commands.registerCommand('readplugin.loginWechatRead', async () => {
+            const token = await vscode.window.showInputBox({
+                prompt: 'Enter your WeChat Read token',
+                ignoreFocusOut: true
+            });
+            const userId = await vscode.window.showInputBox({
+                prompt: 'Enter your WeChat Read User ID (userVid)',
+                ignoreFocusOut: true
+            });
+
+            if (token && userId) {
+                state.updateSettings({ wechatReadToken: token, wechatReadUserId: userId });
+                booksTreeDataProvider.refresh();
+                vscode.window.showInformationMessage('WeChat Read credentials saved.');
+            }
+        }),
+
+        vscode.commands.registerCommand('readplugin.syncWechatBooks', async () => {
+            await state.syncWechatBooks();
+            booksTreeDataProvider.refresh();
         })
-    ];
+    );
 
-    // 添加到订阅
-    commands.forEach(command => context.subscriptions.push(command));
-    context.subscriptions.push(contentViewProvider);
-
-    // 插件禁用时清理
+    // 插件卸载时清理
     context.subscriptions.push({
         dispose: () => {
             state.dispose();
-            bookContentProvider.dispose();
         }
     });
 }
 
-// 停用插件
-export function deactivate(): void {
-    console.log('Read Plugin is now deactivated!');
+export function deactivate() {
+    console.log('Read Plugin is now deactivated.');
 }

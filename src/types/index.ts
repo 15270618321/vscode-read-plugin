@@ -8,6 +8,11 @@ export interface Book {
     lastReadTime?: number;
     addedTime: number;
     encoding?: string;
+    type?: 'local' | 'wechat';
+    bookId?: string;
+    cover?: string;
+    author?: string;
+    synckey?: number;
 }
 
 export interface PluginSettings {
@@ -17,6 +22,9 @@ export interface PluginSettings {
     theme: 'auto' | 'light' | 'dark';
     autoSaveInterval: number;
     maxFileSize: number;
+    wechatReadToken?: string;
+    wechatReadUserId?: string;
+    wechatReadSynckey?: number;
 }
 
 export interface WebViewMessage {
@@ -45,5 +53,8 @@ export const DEFAULT_SETTINGS: PluginSettings = {
     lineHeight: 1.8,
     theme: 'auto',
     autoSaveInterval: 3000,
-    maxFileSize: 50 * 1024 * 1024 // 50MB
+    maxFileSize: 50 * 1024 * 1024, // 50MB
+    wechatReadToken: undefined,
+    wechatReadUserId: undefined,
+    wechatReadSynckey: 0
 };

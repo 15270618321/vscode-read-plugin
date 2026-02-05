@@ -65,10 +65,25 @@
         "category": "Book Reader"
       },
       {
-        "command": "readplugin.openSettings",
-        "title": "Open Settings",
-        "category": "Book Reader"
-      }
+          "command": "readplugin.openSettings",
+          "title": "Open Settings",
+          "category": "Book Reader"
+        },
+        {
+          "command": "readplugin.loginWechatRead",
+          "title": "Login to WeChat Read",
+          "category": "Book Reader"
+        },
+        {
+          "command": "readplugin.syncWechatBooks",
+          "title": "Sync WeChat Books",
+          "category": "Book Reader"
+        },
+        {
+          "command": "readplugin.refreshWechatBooks",
+          "title": "Refresh WeChat Books",
+          "category": "Book Reader"
+        }
     ],
     "viewsContainers": {
       "activitybar": [
@@ -137,6 +152,16 @@
           "type": "number",
           "default": 52428800,
           "description": "Maximum file size in bytes (default: 50MB)"
+        },
+        "readplugin.wechatReadToken": {
+          "type": "string",
+          "default": "",
+          "description": "微信读书登录Token"
+        },
+        "readplugin.wechatReadUserId": {
+          "type": "string",
+          "default": "",
+          "description": "微信读书用户ID"
         }
       }
     },
