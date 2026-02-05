@@ -1,4 +1,20 @@
-// extension.ts
+/**
+ * extension.ts
+ * 插件的主入口文件
+ *
+ * 功能说明：
+ * 1. 注册插件命令和视图
+ * 2. 管理插件状态
+ * 3. 处理书籍的添加、打开、删除等操作
+ * 4. 提供PDF和文本文件的阅读功能
+ * 5. 集成微信读书功能
+ *
+ * 主要模块：
+ * - ReadPluginState: 插件状态管理
+ * - BooksTreeDataProvider: 书籍树视图数据提供者
+ * - BookContentViewProvider: 书籍内容视图提供者
+ * - 各种命令处理函数
+ */
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -24,13 +40,30 @@ import {
     WebViewMessage
 } from './types';
 
-// 插件状态管理类
+/**
+ * 插件状态管理类
+ *
+ * 功能：
+ * 1. 管理书籍列表
+ * 2. 管理插件设置
+ * 3. 处理数据持久化
+ * 4. 提供书籍的增删改查操作
+ * 5. 集成微信读书功能
+ */
 class ReadPluginState {
+    /** 书籍列表 */
     private books: Book[] = [];
+    /** 插件设置 */
     private settings: PluginSettings;
+    /** 数据存储路径 */
     private storagePath: string;
+    /** 事件管理器 */
     private eventManager: EventManager;
 
+    /**
+     * 构造函数
+     * @param context VS Code扩展上下文
+     */
     constructor(context: vscode.ExtensionContext) {
         this.storagePath = this.getStoragePath(context);
         this.eventManager = new EventManager();
@@ -70,6 +103,11 @@ class ReadPluginState {
         return this.books.filter(book => book.type === 'wechat');
     }
 
+    /**
+     * 获取数据存储路径
+     * @param context VS Code扩展上下文
+     * @returns 存储路径字符串
+     */
     private getStoragePath(context: vscode.ExtensionContext): string {
         if (context.storagePath) {
             return context.storagePath;
@@ -77,6 +115,10 @@ class ReadPluginState {
         return path.join(os.homedir(), '.vscode-reader');
     }
 
+    /**
+     * 加载插件设置
+     * @returns 插件设置对象
+     */
     private loadSettings(): PluginSettings {
         const settingsPath = path.join(this.storagePath, 'settings.json');
         const defaultSettings = DEFAULT_SETTINGS;
@@ -89,6 +131,9 @@ class ReadPluginState {
         }
     }
 
+    /**
+     * 加载书籍列表
+     */
     private loadBooks(): void {
         const booksPath = path.join(this.storagePath, 'books.json');
         try {
@@ -115,6 +160,9 @@ class ReadPluginState {
         }
     }
 
+    /**
+     * 保存书籍列表
+     */
     private saveBooks(): void {
         const booksPath = path.join(this.storagePath, 'books.json');
         try {
@@ -126,6 +174,9 @@ class ReadPluginState {
         }
     }
 
+    /**
+     * 保存插件设置
+     */
     private saveSettings(): void {
         const settingsPath = path.join(this.storagePath, 'settings.json');
         try {
@@ -137,7 +188,11 @@ class ReadPluginState {
         }
     }
 
+    /**
+     * 注册自动保存功能
+     */
     private registerAutoSave(): void {
+        // 使用防抖函数优化保存操作
         const saveDebounced = debounce(() => {
             this.saveBooks();
             this.saveSettings();
@@ -157,7 +212,11 @@ class ReadPluginState {
         });
     }
 
-    // 公开方法
+    /**
+     * 添加书籍
+     * @param bookPath 书籍文件路径
+     * @returns 添加的书籍对象
+     */
     addBook(bookPath: string): Book {
         try {
             // 安全验证
@@ -200,14 +259,28 @@ class ReadPluginState {
         }
     }
 
+    /**
+     * 获取所有书籍
+     * @returns 书籍列表数组
+     */
     getBooks(): Book[] {
         return [...this.books];
     }
 
+    /**
+     * 根据ID获取书籍
+     * @param bookId 书籍ID
+     * @returns 书籍对象或undefined
+     */
     getBook(bookId: string): Book | undefined {
         return this.books.find(b => b.id === bookId);
     }
 
+    /**
+     * 更新书籍阅读进度
+     * @param bookId 书籍ID
+     * @param progress 阅读进度（0-100）
+     */
     updateBookProgress(bookId: string, progress: number): void {
         const book = this.books.find(b => b.id === bookId);
         if (book) {
@@ -222,6 +295,11 @@ class ReadPluginState {
         }
     }
 
+    /**
+     * 删除书籍
+     * @param bookId 书籍ID
+     * @returns 是否删除成功
+     */
     removeBook(bookId: string): boolean {
         const initialLength = this.books.length;
         this.books = this.books.filter(b => b.id !== bookId);
@@ -233,33 +311,61 @@ class ReadPluginState {
         return false;
     }
 
+    /**
+     * 获取插件设置
+     * @returns 插件设置对象
+     */
     getSettings(): PluginSettings {
         return { ...this.settings };
     }
 
+    /**
+     * 更新插件设置
+     * @param newSettings 新的设置对象（部分更新）
+     */
     updateSettings(newSettings: Partial<PluginSettings>): void {
         this.settings = { ...this.settings, ...newSettings };
         this.saveSettings();
     }
 
+    /**
+     * 获取字体大小
+     * @returns 字体大小值
+     */
     getFontSize(): number {
         return this.settings.fontSize;
     }
 
+    /**
+     * 设置字体大小
+     * @param size 字体大小
+     * @returns 设置后的字体大小（限制在8-48之间）
+     */
     setFontSize(size: number): number {
         this.settings.fontSize = Math.max(8, Math.min(48, Math.round(size)));
         this.saveSettings();
         return this.settings.fontSize;
     }
 
+    /**
+     * 增加字体大小
+     * @returns 增加后的字体大小
+     */
     increaseFontSize(): number {
         return this.setFontSize(this.settings.fontSize + 2);
     }
 
+    /**
+     * 减小字体大小
+     * @returns 减小后的字体大小
+     */
     decreaseFontSize(): number {
         return this.setFontSize(this.settings.fontSize - 2);
     }
 
+    /**
+     * 释放资源
+     */
     dispose(): void {
         this.eventManager.dispose();
         // 最后一次保存
@@ -268,8 +374,20 @@ class ReadPluginState {
     }
 }
 
-// 书籍树项
+/**
+ * 书籍树项类
+ *
+ * 功能：
+ * 1. 在VS Code树视图中显示书籍项
+ * 2. 根据书籍类型显示不同的图标
+ * 3. 提供书籍的详细信息 tooltip
+ * 4. 设置点击书籍时的打开命令
+ */
 class BookItem extends vscode.TreeItem {
+    /**
+     * 构造函数
+     * @param book 书籍对象
+     */
     constructor(public readonly book: Book) {
         super(book.name, vscode.TreeItemCollapsibleState.None);
 
@@ -297,6 +415,10 @@ class BookItem extends vscode.TreeItem {
         }
     }
 
+    /**
+     * 获取书籍的详细信息 tooltip
+     * @returns tooltip 文本
+     */
     private getTooltipText(): string {
         const lines = [
             `Name: ${this.book.name}`,
@@ -326,6 +448,11 @@ class BookItem extends vscode.TreeItem {
         return lines.join('\n');
     }
 
+    /**
+     * 格式化文件大小
+     * @param bytes 字节数
+     * @returns 格式化后的文件大小字符串
+     */
     private formatFileSize(bytes: number): string {
         if (bytes === 0) {
             return '0 Bytes';
@@ -337,8 +464,16 @@ class BookItem extends vscode.TreeItem {
     }
 }
 
-// 添加书籍项
+/**
+ * 添加书籍项类
+ *
+ * 功能：
+ * 在VS Code树视图中显示添加书籍的按钮
+ */
 class AddBookItem extends vscode.TreeItem {
+    /**
+     * 构造函数
+     */
     constructor() {
         super('+ Add Book', vscode.TreeItemCollapsibleState.None);
         this.tooltip = 'Add a new book file';
@@ -351,8 +486,16 @@ class AddBookItem extends vscode.TreeItem {
     }
 }
 
-// 微信读书登录项
+/**
+ * 微信读书登录项类
+ *
+ * 功能：
+ * 在VS Code树视图中显示微信读书登录按钮
+ */
 class WechatLoginItem extends vscode.TreeItem {
+    /**
+     * 构造函数
+     */
     constructor() {
         super('🔐 Login to WeChat Read', vscode.TreeItemCollapsibleState.None);
         this.tooltip = 'Login to WeChat Read to access your books';
@@ -365,8 +508,16 @@ class WechatLoginItem extends vscode.TreeItem {
     }
 }
 
-// 微信读书同步项
+/**
+ * 微信读书同步项类
+ *
+ * 功能：
+ * 在VS Code树视图中显示微信读书同步按钮
+ */
 class WechatSyncItem extends vscode.TreeItem {
+    /**
+     * 构造函数
+     */
     constructor() {
         super('🔄 Sync WeChat Books', vscode.TreeItemCollapsibleState.None);
         this.tooltip = 'Sync your WeChat Read books';
@@ -379,8 +530,17 @@ class WechatSyncItem extends vscode.TreeItem {
     }
 }
 
-// 微信读书状态项
+/**
+ * 微信读书状态项类
+ *
+ * 功能：
+ * 在VS Code树视图中显示微信读书登录状态
+ */
 class WechatStatusItem extends vscode.TreeItem {
+    /**
+     * 构造函数
+     * @param status 登录状态字符串
+     */
     constructor(status: string) {
         super(`📱 WeChat Read: ${status}`, vscode.TreeItemCollapsibleState.None);
         this.tooltip = `WeChat Read status: ${status}`;
@@ -389,27 +549,58 @@ class WechatStatusItem extends vscode.TreeItem {
     }
 }
 
-// 书籍树数据提供者
+/**
+ * 书籍树数据提供者类
+ *
+ * 功能：
+ * 1. 为VS Code树视图提供数据
+ * 2. 管理树视图的刷新
+ * 3. 组织书籍和操作项的显示顺序
+ * 4. 根据登录状态显示不同的微信读书操作项
+ */
 class BooksTreeDataProvider implements vscode.TreeDataProvider<BookItem | AddBookItem | WechatLoginItem | WechatSyncItem | WechatStatusItem> {
+    /** 树数据变化事件发射器 */
     private _onDidChangeTreeData: vscode.EventEmitter<BookItem | AddBookItem | WechatLoginItem | WechatSyncItem | WechatStatusItem | undefined | null | void> =
         new vscode.EventEmitter<BookItem | AddBookItem | WechatLoginItem | WechatSyncItem | WechatStatusItem | undefined | null | void>();
+    /** 树数据变化事件 */
     readonly onDidChangeTreeData: vscode.Event<BookItem | AddBookItem | WechatLoginItem | WechatSyncItem | WechatStatusItem | undefined | null | void> =
         this._onDidChangeTreeData.event;
 
+    /**
+     * 构造函数
+     * @param state 插件状态管理对象
+     */
     constructor(private state: ReadPluginState) {}
 
+    /**
+     * 刷新树视图
+     */
     refresh(): void {
         this._onDidChangeTreeData.fire();
     }
 
+    /**
+     * 刷新指定书籍项
+     * @param _bookId 书籍ID
+     */
     refreshBook(_bookId: string): void {
         this._onDidChangeTreeData.fire();
     }
 
+    /**
+     * 获取树项
+     * @param element 树项元素
+     * @returns 树项对象
+     */
     getTreeItem(element: BookItem | AddBookItem | WechatLoginItem | WechatSyncItem | WechatStatusItem): vscode.TreeItem {
         return element;
     }
 
+    /**
+     * 获取子项
+     * @param element 父元素
+     * @returns 子项数组
+     */
     getChildren(element?: any): Thenable<(BookItem | AddBookItem | WechatLoginItem | WechatSyncItem | WechatStatusItem)[]> {
         if (!element) {
             const items: (BookItem | AddBookItem | WechatLoginItem | WechatSyncItem | WechatStatusItem)[] = [];
