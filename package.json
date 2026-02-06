@@ -18,7 +18,7 @@
     "text",
     "reading"
   ],
-  "icon": "media/book.svg",
+  "icon": "media/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/your-username/read-plugin.git"
@@ -65,25 +65,25 @@
         "category": "Book Reader"
       },
       {
-          "command": "readplugin.openSettings",
-          "title": "Open Settings",
-          "category": "Book Reader"
-        },
-        {
-          "command": "readplugin.loginWechatRead",
-          "title": "Login to WeChat Read",
-          "category": "Book Reader"
-        },
-        {
-          "command": "readplugin.syncWechatBooks",
-          "title": "Sync WeChat Books",
-          "category": "Book Reader"
-        },
-        {
-          "command": "readplugin.refreshWechatBooks",
-          "title": "Refresh WeChat Books",
-          "category": "Book Reader"
-        }
+        "command": "readplugin.openSettings",
+        "title": "Open Settings",
+        "category": "Book Reader"
+      },
+      {
+        "command": "readplugin.loginWechatRead",
+        "title": "Login to WeChat Read",
+        "category": "Book Reader"
+      },
+      {
+        "command": "readplugin.syncWechatBooks",
+        "title": "Sync WeChat Books",
+        "category": "Book Reader"
+      },
+      {
+        "command": "readplugin.refreshWechatBooks",
+        "title": "Refresh WeChat Books",
+        "category": "Book Reader"
+      }
     ],
     "viewsContainers": {
       "activitybar": [
@@ -138,7 +138,11 @@
         "readplugin.theme": {
           "type": "string",
           "default": "auto",
-          "enum": ["auto", "light", "dark"],
+          "enum": [
+            "auto",
+            "light",
+            "dark"
+          ],
           "description": "Reading theme"
         },
         "readplugin.autoSaveInterval": {
@@ -208,14 +212,17 @@
     "test": "vscode-test"
   },
   "devDependencies": {
-    "@types/vscode": "^1.107.1",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
+    "@types/vscode": "^1.107.1",
     "@typescript-eslint/eslint-plugin": "^8.52.0",
     "@typescript-eslint/parser": "^8.52.0",
-    "eslint": "^9.39.2",
-    "typescript": "^5.9.3",
     "@vscode/test-cli": "^0.0.12",
-    "@vscode/test-electron": "^2.5.2"
+    "@vscode/test-electron": "^2.5.2",
+    "eslint": "^9.39.2",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "iconv-lite": "^0.7.2"
   }
 }
