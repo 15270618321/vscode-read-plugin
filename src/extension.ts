@@ -10,10 +10,16 @@
  * 5. 集成微信读书功能
  *
  * 主要模块：
- * - ReadPluginState: 插件状态管理
- * - BooksTreeDataProvider: 书籍树视图数据提供者
- * - BookContentViewProvider: 书籍内容视图提供者
- * - 各种命令处理函数
+ * - ReadPluginState: 插件状态管理 - 负责管理书籍列表、设置和数据持久化
+ * - BooksTreeDataProvider: 书籍树视图数据提供者 - 为侧边栏树视图提供数据
+ * - BookContentViewProvider: 书籍内容视图提供者 - 显示书籍内容的WebView
+ * - 各种命令处理函数 - 处理用户操作和事件响应
+ *
+ * 代码结构：
+ * 1. 导入依赖和工具类
+ * 2. 定义核心类
+ * 3. 实现插件激活和命令注册
+ * 4. 处理插件生命周期
  */
 import * as vscode from 'vscode';
 import * as fs from 'fs';
@@ -44,52 +50,94 @@ import {
  * 插件状态管理类
  *
  * 功能：
- * 1. 管理书籍列表
- * 2. 管理插件设置
- * 3. 处理数据持久化
- * 4. 提供书籍的增删改查操作
- * 5. 集成微信读书功能
+ * 1. 管理书籍列表 - 存储和操作所有添加的书籍
+ * 2. 管理插件设置 - 处理字体大小、主题等配置
+ * 3. 处理数据持久化 - 将数据保存到本地文件系统
+ * 4. 提供书籍的增删改查操作 - 书籍的添加、删除、获取等方法
+ * 5. 集成微信读书功能 - 同步微信读书书籍和进度
+ *
+ * 核心概念：
+ * - 状态管理：集中管理插件的所有数据和状态
+ * - 数据持久化：将数据保存到文件，下次启动时恢复
+ * - 事件驱动：通过事件管理器处理各种事件
  */
 class ReadPluginState {
-    /** 书籍列表 */
+    /** 书籍列表 - 存储所有添加的书籍对象 */
     private books: Book[] = [];
-    /** 插件设置 */
+    /** 插件设置 - 存储字体大小、主题等配置 */
     private settings: PluginSettings;
-    /** 数据存储路径 */
+    /** 数据存储路径 - 数据文件的保存位置 */
     private storagePath: string;
-    /** 事件管理器 */
+    /** 事件管理器 - 管理各种事件监听器 */
     private eventManager: EventManager;
 
     /**
      * 构造函数
-     * @param context VS Code扩展上下文
+     * @param context VS Code扩展上下文 - 包含扩展的路径、订阅等信息
+     *
+     * 初始化流程：
+     * 1. 获取数据存储路径
+     * 2. 创建事件管理器实例
+     * 3. 加载插件设置
+     * 4. 加载书籍列表
+     * 5. 注册自动保存功能
      */
     constructor(context: vscode.ExtensionContext) {
+        // 1. 获取数据存储路径 - 用于保存书籍列表和设置
         this.storagePath = this.getStoragePath(context);
+
+        // 2. 创建事件管理器实例 - 用于管理事件监听器
         this.eventManager = new EventManager();
+
+        // 3. 加载插件设置 - 从文件中读取设置，或使用默认设置
         this.settings = this.loadSettings();
+
+        // 4. 加载书籍列表 - 从文件中读取书籍，验证书籍文件是否存在
         this.loadBooks();
 
-        // 注册自动保存
+        // 5. 注册自动保存 - 定期保存数据，避免数据丢失
         this.registerAutoSave();
     }
 
+    /**
+     * 同步微信读书书籍
+     * @returns 同步的微信读书书籍列表
+     *
+     * 功能：
+     * 1. 创建微信读书服务实例
+     * 2. 调用API获取微信读书书籍
+     * 3. 更新本地存储的微信读书书籍
+     * 4. 更新同步键
+     * 5. 保存数据
+     *
+     * 同步流程：
+     * 1. 使用当前的synckey调用微信读书API
+     * 2. 过滤出本地书籍（非微信读书书籍）
+     * 3. 合并本地书籍和微信读书书籍
+     * 4. 如果有新的synckey，更新设置
+     * 5. 保存书籍列表和设置
+     */
     async syncWechatBooks(): Promise<Book[]> {
+        // 创建微信读书服务实例 - 用于调用微信读书API
         const service = new WechatReadService(this.settings);
 
         try {
+            // 调用API获取微信读书书籍 - 使用synckey实现增量同步
             const wechatBooks = await service.getBooks(this.settings.wechatReadSynckey || 0);
 
             // 更新本地存储的微信读书书籍
+            // 1. 过滤出本地书籍（非微信读书书籍）
             const localBooks = this.books.filter(book => book.type !== 'wechat');
+            // 2. 合并本地书籍和微信读书书籍
             this.books = [...localBooks, ...wechatBooks];
 
-            // 更新synckey
+            // 更新synckey - 用于下次增量同步
             if (wechatBooks.length > 0 && wechatBooks[0].synckey) {
                 this.settings.wechatReadSynckey = wechatBooks[0].synckey;
                 this.saveSettings();
             }
 
+            // 保存书籍列表
             this.saveBooks();
             return wechatBooks;
         } catch (error) {
@@ -216,22 +264,46 @@ class ReadPluginState {
      * 添加书籍
      * @param bookPath 书籍文件路径
      * @returns 添加的书籍对象
+     *
+     * 功能：
+     * 1. 安全验证 - 防止路径遍历攻击
+     * 2. 文件扩展名验证 - 确保只支持.txt和.pdf文件
+     * 3. 文件大小验证 - 确保文件不超过最大限制
+     * 4. 检查是否已存在 - 避免重复添加
+     * 5. 创建书籍对象 - 设置书籍的各种属性
+     * 6. 添加到书籍列表 - 更新内存中的书籍列表
+     * 7. 保存书籍列表 - 将数据持久化
+     *
+     * 添加流程：
+     * 1. 安全验证路径
+     * 2. 验证文件扩展名
+     * 3. 检查文件大小
+     * 4. 检查是否已存在
+     * 5. 创建书籍对象
+     * 6. 添加到列表
+     * 7. 保存数据
+     * 8. 返回书籍对象
      */
     addBook(bookPath: string): Book {
         try {
-            // 安全验证
+            // 安全验证 - 防止路径遍历攻击
             SecurityUtils.sanitizePath(bookPath);
 
+            // 文件扩展名验证 - 确保只支持.txt和.pdf文件
             if (!SecurityUtils.validateFileExtension(bookPath, ALLOWED_EXTENSIONS)) {
                 throw new Error('Only .txt and .pdf files are supported');
             }
 
+            // 文件大小验证 - 确保文件不超过最大限制
             const fileSize = FileUtils.getFileSize(bookPath);
             if (fileSize > this.settings.maxFileSize) {
                 throw new Error(`File too large (max ${this.settings.maxFileSize / 1024 / 1024}MB)`);
             }
 
+            // 获取书籍名称 - 从文件路径中提取
             const bookName = path.basename(bookPath);
+
+            // 检查是否已存在 - 避免重复添加
             const existingBook = this.books.find(b => b.path === bookPath);
 
             if (existingBook) {
@@ -239,20 +311,27 @@ class ReadPluginState {
                 return existingBook;
             }
 
+            // 创建书籍对象 - 设置书籍的各种属性
             const book: Book = {
-                id: Date.now().toString(),
-                name: bookName,
-                path: bookPath,
-                progress: 0,
-                fileSize: fileSize,
-                addedTime: Date.now(),
-                encoding: EncodingUtils.detectEncoding(bookPath)
+                id: Date.now().toString(), // 使用时间戳作为唯一ID
+                name: bookName, // 书籍名称
+                path: bookPath, // 书籍文件路径
+                progress: 0, // 初始阅读进度为0
+                fileSize: fileSize, // 文件大小
+                addedTime: Date.now(), // 添加时间
+                encoding: EncodingUtils.detectEncoding(bookPath) // 检测文件编码
             };
 
+            // 添加到书籍列表 - 更新内存中的书籍列表
             this.books.push(book);
+
+            // 保存书籍列表 - 将数据持久化到文件
             this.saveBooks();
+
+            // 返回添加的书籍对象
             return book;
         } catch (error) {
+            // 处理错误 - 显示错误信息并抛出错误
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             vscode.window.showErrorMessage(`Failed to add book: ${errorMessage}`);
             throw error;
@@ -630,13 +709,33 @@ class BooksTreeDataProvider implements vscode.TreeDataProvider<BookItem | AddBoo
     }
 }
 
-// 书籍内容视图提供者
+/**
+ * 书籍内容视图提供者类
+ *
+ * 功能：
+ * 1. 提供书籍内容的WebView视图
+ * 2. 处理WebView的创建和配置
+ * 3. 管理WebView与扩展之间的通信
+ * 4. 根据书籍类型渲染不同的内容
+ * 5. 处理字体大小调整、进度更新等操作
+ *
+ * 核心概念：
+ * - WebView: VS Code中显示网页内容的组件
+ * - 消息传递: WebView与扩展之间通过postMessage和onDidReceiveMessage通信
+ * - 内容渲染: 根据书籍类型（PDF、文本、微信读书）渲染不同的内容
+ */
 class BookContentViewProvider implements vscode.WebviewViewProvider {
+    /** 视图类型ID - 用于注册和识别视图 */
     public static readonly viewType = 'read-plugin.bookContent';
+    /** WebView视图实例 - 用于显示书籍内容 */
     private _view?: vscode.WebviewView;
+    /** 当前打开的书籍 - 存储当前正在阅读的书籍 */
     private _currentBook?: Book;
+    /** 插件状态 - 用于访问书籍列表和设置 */
     private _state: ReadPluginState;
+    /** 书籍树数据提供者 - 用于刷新树视图 */
     private _treeDataProvider?: BooksTreeDataProvider;
+    /** 事件管理器 - 用于管理事件监听器 */
     private _eventManager: EventManager;
 
 
@@ -750,12 +849,15 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
                 break;
 
             case 'loadMoreContent':
+                console.log('Loading more content request:', {bookId: this._currentBook?.id, start: data.start, end: data.end, encoding: data.encoding});
                 if (this._currentBook && data.start !== undefined && data.end !== undefined) {
                     console.log('Loading more content:', { bookId: this._currentBook.id, start: data.start, end: data.end });
                     try {
                         const encoding = data.encoding || this._currentBook.encoding || 'utf8';
                         const content = EncodingUtils.readFileWithEncoding(this._currentBook.path, data.start, data.end, encoding);
                         const escapedContent = SecurityUtils.escapeHtml(content);
+
+                        console.log(`Sending ${escapedContent.length} characters to webview`)
 
                         this._view.webview.postMessage({
                             type: 'moreContent',
@@ -788,15 +890,43 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    /**
+     * 打开书籍
+     * @param book 要打开的书籍对象
+     *
+     * 功能：
+     * 1. 设置当前书籍 - 更新内存中的当前书籍
+     * 2. 检查视图是否可用 - 确保WebView已创建
+     * 3. 生成HTML内容 - 根据书籍类型生成不同的HTML
+     * 4. 显示视图 - 确保视图可见
+     * 5. 更新WebView内容 - 将生成的HTML设置到WebView
+     *
+     * 打开流程：
+     * 1. 设置当前书籍
+     * 2. 检查视图是否存在
+     * 3. 生成对应书籍类型的HTML
+     * 4. 显示视图
+     * 5. 更新WebView内容
+     */
     openBook(book: Book): void {
+        // 记录日志 - 方便调试
         console.log('Opening book:', { id: book.id, name: book.name, size: book.fileSize });
+
+        // 设置当前书籍 - 更新内存中的当前书籍
         this._currentBook = book;
+
+        // 检查视图是否可用 - 确保WebView已创建
         if (this._view) {
             console.log('View available, updating HTML');
             try {
+                // 生成HTML内容 - 根据书籍类型生成不同的HTML
                 const html = this._getHtmlForWebview(this._view.webview);
                 console.log('Generated HTML length:', html.length);
+
+                // 显示视图 - 确保视图可见
                 this._view.show?.(true);
+
+                // 更新WebView内容 - 将生成的HTML设置到WebView
                 this._view.webview.html = html;
                 console.log('Webview HTML updated successfully');
             } catch (error) {
@@ -908,23 +1038,46 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    /**
+     * 获取WebView的HTML内容
+     * @param _webview WebView实例
+     * @returns 生成的HTML字符串
+     *
+     * 功能：
+     * 1. 获取主题颜色 - 用于适配不同主题
+     * 2. 获取插件设置 - 用于应用字体大小等设置
+     * 3. 根据当前书籍类型生成对应HTML
+     *
+     * 生成逻辑：
+     * 1. 如果没有当前书籍，返回空状态HTML
+     * 2. 如果是微信读书书籍，返回微信读书HTML
+     * 3. 如果是PDF文件，返回PDF阅读HTML
+     * 4. 否则，返回文本阅读HTML
+     */
     private _getHtmlForWebview(_webview: vscode.Webview): string {
+        // 获取主题颜色 - 用于适配不同主题
         const themeColors = ThemeUtils.getThemeColors();
+        // 获取插件设置 - 用于应用字体大小等设置
         const settings = this._state.getSettings();
 
+        // 如果没有当前书籍，返回空状态HTML
         if (!this._currentBook) {
             return this._getEmptyStateHtml(themeColors);
         }
 
+        // 如果是微信读书书籍，返回微信读书HTML
         if (this._currentBook.type === 'wechat') {
             return this._getWechatHtml(this._currentBook, themeColors, settings);
         }
 
+        // 获取文件扩展名 - 用于判断文件类型
         const ext = path.extname(this._currentBook.path).toLowerCase();
 
+        // 如果是PDF文件，返回PDF阅读HTML
         if (ext === '.pdf') {
             return this._getPdfHtml(this._currentBook, themeColors, settings);
         } else {
+            // 否则，返回文本阅读HTML
             return this._getTextHtml(this._currentBook, themeColors, settings);
         }
     }
@@ -1364,7 +1517,7 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
     }
 
     private _getTextHtml(book: Book, themeColors: any, settings: PluginSettings): string {
-        const CHUNK_SIZE = 1024 * 1024; // 1MB
+        const CHUNK_SIZE = 10 * 1024; // 10KB
         const isChunked = book.fileSize > CHUNK_SIZE;
         let content = '';
         let encoding = book.encoding || 'utf8';
@@ -1423,106 +1576,166 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
                 </div>
 
                 <!-- 字体调节按钮 -->
-                <div style="position: fixed; right: 20px; top: 50%; transform: translateY(-50%); z-index: 1000; display: flex; flex-direction: column; gap: 10px;">
-                    <button onclick="decreaseFontSize()" style="padding: 10px; border: 1px solid ${themeColors.borderColor}; border-radius: 5px; background-color: ${themeColors.backgroundColor === '#1e1e1e' ? '#333' : '#f0f0f0'}; color: ${themeColors.textColor}; cursor: pointer; font-size: 14px;">A-</button>
-                    <div id="fontSizeDisplay" style="padding: 10px; border: 1px solid ${themeColors.borderColor}; border-radius: 5px; background-color: ${themeColors.backgroundColor === '#1e1e1e' ? '#333' : '#f0f0f0'}; color: ${themeColors.textColor}; font-size: 14px; text-align: center; min-width: 40px;">${fontSize}px</div>
-                    <button onclick="increaseFontSize()" style="padding: 10px; border: 1px solid ${themeColors.borderColor}; border-radius: 5px; background-color: ${themeColors.backgroundColor === '#1e1e1e' ? '#333' : '#f0f0f0'}; color: ${themeColors.textColor}; cursor: pointer; font-size: 14px;">A+</button>
+                <div style="
+                    position: fixed;
+                    right: 20px;
+                    top: 50%;
+                    transform: translateY(-50%);
+                    z-index: 1000;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 10px;
+                    opacity: 0.4;
+                    transition: opacity 0.3s ease;
+                "
+                onmouseover="this.style.opacity='0.9'"
+                onmouseout="this.style.opacity='0.4'">
+                    <button onclick="decreaseFontSize()" style="
+                        padding: 10px;
+                        border: 1px solid ${themeColors.borderColor};
+                        border-radius: 5px;
+                        background-color: ${themeColors.backgroundColor === '#1e1e1e' ? '#333' : '#f0f0f0'};
+                        color: ${themeColors.textColor};
+                        cursor: pointer;
+                        font-size: 14px;
+                    ">A-</button>
+
+                    <div id="fontSizeDisplay" style="
+                        padding: 10px;
+                        border: 1px solid ${themeColors.borderColor};
+                        border-radius: 5px;
+                        background-color: ${themeColors.backgroundColor === '#1e1e1e' ? '#333' : '#f0f0f0'};
+                        color: ${themeColors.textColor};
+                        font-size: 14px;
+                        text-align: center;
+                        min-width: 40px;
+                    ">${fontSize}px</div>
+
+                    <button onclick="increaseFontSize()" style="
+                        padding: 10px;
+                        border: 1px solid ${themeColors.borderColor};
+                        border-radius: 5px;
+                        background-color: ${themeColors.backgroundColor === '#1e1e1e' ? '#333' : '#f0f0f0'};
+                        color: ${themeColors.textColor};
+                        cursor: pointer;
+                        font-size: 14px;
+                    ">A+</button>
                 </div>
 
-                <script>
+            <script>
+                // === 关键修复：立即执行函数，确保事件监听器在页面加载时就被绑定 ===
+                (function() {
                     const vscode = acquireVsCodeApi();
                     const contentElement = document.getElementById('content');
                     const textContainer = document.getElementById('text-container');
                     const loadingIndicator = document.getElementById('loading-indicator');
-
                     const currentBookId = '${book.id}';
 
-                    // 字体调节函数
-                    function decreaseFontSize() {
-                        vscode.postMessage({ type: 'decreaseFontSize', bookId: currentBookId });
-                    }
-
-                    function increaseFontSize() {
-                        vscode.postMessage({ type: 'increaseFontSize', bookId: currentBookId });
-                    }
+                    // 状态变量
                     const isChunked = ${isChunked};
                     const totalSize = ${book.fileSize};
+                    const CHUNK_SIZE = ${CHUNK_SIZE};
                     let loadedSize = ${isChunked ? CHUNK_SIZE : book.fileSize};
                     let isLoading = false;
-                    let isScrolling = false;
 
-                    const targetProgress = ${book.progress};
-                    const targetOffset = Math.floor((targetProgress / 100) * totalSize);
-                    let pendingRestore = isChunked && targetProgress > 0;
+                    console.log('=== 页面初始化 ===');
+                    console.log('当前书籍ID:', currentBookId);
+                    console.log('是否分块加载:', isChunked);
+                    console.log('总大小:', totalSize);
+                    console.log('已加载大小:', loadedSize);
 
-                    function calculateProgress() {
-                        const scrollRange = contentElement.scrollHeight - contentElement.clientHeight;
-                        const ratio = scrollRange > 0 ? contentElement.scrollTop / scrollRange : 0;
-                        const estimatedOffset = Math.min(loadedSize, Math.max(0, loadedSize * ratio));
-                        const progress = totalSize > 0 ? (estimatedOffset / totalSize) * 100 : 0;
-                        return Math.max(0, Math.min(100, progress));
-                    }
+                    // === 立即绑定消息监听器 ===
+                    window.addEventListener('message', handleMessage);
 
-                    function updateProgress() {
-                        if (!isScrolling) {
-                            const progress = calculateProgress();
-                            vscode.postMessage({ type: 'updateProgress', progress: progress, bookId: currentBookId });
-                        }
-                    }
+                    function handleMessage(event) {
+                        const message = event.data;
 
-                    function restoreScrollForNonChunked() {
-                        const scrollRange = contentElement.scrollHeight - contentElement.clientHeight;
-                        if (scrollRange > 0) {
-                            contentElement.scrollTop = scrollRange * (targetProgress / 100);
-                        }
-                    }
+                        console.log('收到消息:', message.type);
 
-                    function tryRestoreForChunked() {
-                        if (!pendingRestore) {
+                        // 检查消息是否属于当前书籍
+                        if (message.bookId && message.bookId !== currentBookId) {
+                            console.log('忽略其他书籍的消息，当前ID:', currentBookId, '消息ID:', message.bookId);
                             return;
                         }
-                        if (loadedSize < targetOffset && !isLoading && loadedSize < totalSize) {
-                            loadMore();
-                            return;
-                        }
-                        const scrollRange = contentElement.scrollHeight - contentElement.clientHeight;
-                        if (scrollRange > 0) {
-                            const ratio = loadedSize > 0 ? Math.min(1, targetOffset / loadedSize) : 0;
-                            contentElement.scrollTop = scrollRange * ratio;
-                            pendingRestore = false;
+
+                        switch (message.type) {
+                            case 'moreContent':
+                                console.log('收到更多内容:', {
+                                    start: message.start,
+                                    end: message.end,
+                                    contentLength: message.content ? message.content.length : 0
+                                });
+
+                                if (message.content && message.content.length > 0) {
+                                    // 追加内容
+                                    textContainer.innerHTML += message.content;
+                                    loadedSize = message.end;
+                                    isLoading = false;
+                                    loadingIndicator.style.display = 'none';
+
+                                    console.log('内容已追加，loadedSize:', loadedSize);
+
+                                    // 如果正在恢复位置，尝试重新恢复
+                                    if (isRestoringPosition) {
+                                        console.log('内容加载完成，尝试重新恢复位置');
+                                        setTimeout(restorePosition, 300); // 减少延迟时间
+                                    }
+                                }
+                                break;
+
+                            case 'contentError':
+                                console.error('加载错误:', message.error);
+                                loadingIndicator.textContent = '加载失败: ' + message.error;
+                                loadingIndicator.style.color = 'red';
+                                isLoading = false;
+                                break;
+
+                            case 'updateFontSize':
+                                document.body.style.fontSize = message.fontSize + 'px';
+                                const fontSizeDisplay = document.getElementById('fontSizeDisplay');
+                                if (fontSizeDisplay) {
+                                    fontSizeDisplay.textContent = message.fontSize + 'px';
+                                }
+                                break;
+
+                            case 'restoreScrollPosition':
+                                contentElement.scrollTop = message.scrollPosition;
+                                break;
                         }
                     }
 
-                    if (isChunked) {
-                        setTimeout(() => {
-                            tryRestoreForChunked();
-                        }, 0);
-                    } else {
-                        restoreScrollForNonChunked();
-                    }
-
-                    // 滚动事件
                     let scrollTimeout;
+                    let isRestoringPosition = false;  // 新增：正在恢复位置的标志
+
                     contentElement.addEventListener('scroll', () => {
-                        isScrolling = true;
+                        if (isRestoringPosition) return;  // 新增：如果正在恢复位置，跳过
+
                         clearTimeout(scrollTimeout);
                         scrollTimeout = setTimeout(() => {
-                            isScrolling = false;
                             updateProgress();
-                        }, 150);
+                        }, 100);
 
                         if (isChunked && !isLoading && loadedSize < totalSize) {
-                            if (contentElement.scrollTop + contentElement.clientHeight >= contentElement.scrollHeight - 200) {
+                            const distanceToBottom = contentElement.scrollHeight -
+                                                    contentElement.scrollTop -
+                                                    contentElement.clientHeight;
+
+                            if (distanceToBottom < 100) {
                                 loadMore();
                             }
                         }
                     });
 
                     function loadMore() {
+                        if (isLoading) return;
+
                         isLoading = true;
                         loadingIndicator.style.display = 'block';
+
                         const start = loadedSize;
-                        const end = Math.min(loadedSize + ${CHUNK_SIZE}, totalSize);
+                        const end = Math.min(loadedSize + CHUNK_SIZE, totalSize);
+
+                        console.log('发送加载请求:', { start: start, end: end });
 
                         vscode.postMessage({
                             type: 'loadMoreContent',
@@ -1533,54 +1746,178 @@ class BookContentViewProvider implements vscode.WebviewViewProvider {
                         });
                     }
 
-                    // 字体大小和滚动位置恢复
-                    window.addEventListener('message', event => {
-                        const message = event.data;
-                        if (message.bookId !== currentBookId) return;
-
-                        switch (message.type) {
-                            case 'updateFontSize':
-                                const previousRange = contentElement.scrollHeight - contentElement.clientHeight;
-                                const previousRatio = previousRange > 0 ? contentElement.scrollTop / previousRange : 0;
-                                document.body.style.fontSize = message.fontSize + 'px';
-                                // 更新字体大小显示
-                                const fontSizeDisplay = document.getElementById('fontSizeDisplay');
-                                if (fontSizeDisplay) {
-                                    fontSizeDisplay.textContent = message.fontSize + 'px';
-                                }
-                                requestAnimationFrame(() => {
-                                    const newRange = contentElement.scrollHeight - contentElement.clientHeight;
-                                    contentElement.scrollTop = newRange * previousRatio;
-                                    if (pendingRestore) {
-                                        tryRestoreForChunked();
-                                    }
-                                    updateProgress();
-                                });
-                                break;
-                            case 'restoreScrollPosition':
-                                contentElement.scrollTop = message.scrollPosition;
-                                updateProgress();
-                                break;
-                            case 'moreContent':
-                                textContainer.innerHTML += message.content;
-                                loadedSize = message.end;
-                                isLoading = false;
-                                loadingIndicator.style.display = 'none';
-                                if (pendingRestore) {
-                                    tryRestoreForChunked();
-                                }
-                                updateProgress();
-                                break;
-                            case 'contentError':
-                                loadingIndicator.textContent = 'Error: ' + message.error;
-                                isLoading = false;
-                                break;
+                    // 初始化进度更新
+                    function updateProgress() {
+                        if (isRestoringPosition) {
+                            console.log('正在恢复位置，跳过进度更新');
+                            return;
                         }
-                    });
 
-                </script>
-            </body>
-            </html>
+                        if (totalSize <= 0) return;
+
+                        let progress;
+
+                        if (!isChunked || loadedSize >= totalSize) {
+                            // 全部加载完成，使用正常滚动比例
+                            const scrollRange = contentElement.scrollHeight - contentElement.clientHeight;
+                            if (scrollRange <= 0) return;
+
+                            const scrollRatio = contentElement.scrollTop / scrollRange;
+                            progress = scrollRatio * 100;
+                        } else {
+                            // 分块加载中 - 改进的进度计算
+                            const scrollRange = contentElement.scrollHeight - contentElement.clientHeight;
+                            if (scrollRange <= 0) return;
+
+                            // 计算当前已加载内容的百分比
+                            const loadedPercentage = (loadedSize / totalSize) * 100;
+                            // 计算当前滚动位置在已加载内容中的百分比
+                            const scrollRatio = Math.min(1, contentElement.scrollTop / scrollRange);
+                            // 计算实际进度
+                            progress = scrollRatio * loadedPercentage;
+                        }
+
+                        // 确保进度值在合理范围内
+                        const roundedProgress = Math.max(0, Math.min(100, Math.round(progress * 100) / 100));
+
+                        console.log('更新进度:', {
+                            progress: roundedProgress,
+                            scrollTop: contentElement.scrollTop,
+                            scrollHeight: contentElement.scrollHeight,
+                            clientHeight: contentElement.clientHeight,
+                            loadedSize: loadedSize,
+                            totalSize: totalSize
+                        });
+
+                        vscode.postMessage({
+                            type: 'updateProgress',
+                            progress: roundedProgress,
+                            bookId: currentBookId
+                        });
+                    }
+
+                    // 初始恢复阅读位置
+                    const targetProgress = ${book.progress};
+                    if (targetProgress > 0) {
+                        isRestoringPosition = true;  // 新增：开始恢复位置
+
+                        function restorePosition() {
+                            // 直接计算和设置滚动位置，不使用requestAnimationFrame以减少延迟
+                            const scrollRange = contentElement.scrollHeight - contentElement.clientHeight;
+                            console.log('计算滚动范围:', {
+                                scrollHeight: contentElement.scrollHeight,
+                                clientHeight: contentElement.clientHeight,
+                                scrollRange: scrollRange,
+                                targetProgress: targetProgress
+                            });
+
+                            if (scrollRange > 0) {
+                                if (!isChunked || loadedSize >= totalSize) {
+                                    // 全部加载完成，直接滚动
+                                    const targetScrollTop = scrollRange * (targetProgress / 100);
+                                    contentElement.scrollTop = targetScrollTop;
+                                    console.log('恢复位置到:', targetScrollTop, '进度:', targetProgress + '%');
+
+                                    // 恢复完成后，立即允许进度更新
+                                    isRestoringPosition = false;
+                                    console.log('位置恢复完成，启用进度更新');
+                                } else {
+                                    // 分块加载，检查目标进度是否在已加载范围内
+                                    const loadedRatio = loadedSize / totalSize;
+                                    const loadedPercentage = loadedRatio * 100;
+
+                                    console.log('分块恢复检查:', {
+                                        targetProgress: targetProgress,
+                                        loadedPercentage: loadedPercentage,
+                                        loadedSize: loadedSize,
+                                        totalSize: totalSize
+                                    });
+
+                                    if (targetProgress <= loadedPercentage) {
+                                        // 目标在已加载范围内
+                                        const scrollRatio = (targetProgress / 100) / loadedRatio;
+                                        const targetScrollTop = scrollRange * scrollRatio;
+                                        contentElement.scrollTop = targetScrollTop;
+                                        console.log('分块恢复位置:', targetScrollTop, '进度:', targetProgress + '%');
+
+                                        // 恢复完成后，立即允许进度更新
+                                        isRestoringPosition = false;
+                                        console.log('位置恢复完成，启用进度更新');
+                                    } else {
+                                        // 目标超过已加载范围，需要加载更多内容
+                                        console.log('目标进度超过已加载范围，需要加载更多内容');
+                                        loadMoreForRestore();
+                                    }
+                                }
+                            } else {
+                                // 滚动范围为0，可能内容还没加载完成，稍后重试
+                                console.log('滚动范围为0，稍后重试恢复位置');
+                                setTimeout(restorePosition, 100); // 减少重试延迟
+                            }
+                        }
+
+                        function loadMoreForRestore() {
+                            if (isLoading || loadedSize >= totalSize) {
+                                // 加载完成或正在加载，尝试恢复位置
+                                setTimeout(restorePosition, 300);
+                                return;
+                            }
+
+                            // 检查当前已加载内容是否足够覆盖目标进度
+                            const loadedRatio = loadedSize / totalSize;
+                            const loadedPercentage = loadedRatio * 100;
+
+                            if (targetProgress <= loadedPercentage) {
+                                // 已加载足够内容，尝试恢复位置
+                                restorePosition();
+                                return;
+                            }
+
+                            isLoading = true;
+                            loadingIndicator.style.display = 'block';
+
+                            const start = loadedSize;
+                            const end = Math.min(loadedSize + CHUNK_SIZE, totalSize);
+
+                            console.log('为恢复位置加载更多内容:', { start: start, end: end });
+
+                            vscode.postMessage({
+                                type: 'loadMoreContent',
+                                start: start,
+                                end: end,
+                                encoding: '${encoding}',
+                                bookId: currentBookId
+                            });
+
+                            // 注意：不再在这里设置isLoading = false，而是由handleMessage函数处理
+                            // 当收到moreContent消息时，handleMessage会设置isLoading = false并尝试恢复位置
+                        }
+
+                        // 开始恢复位置
+                        setTimeout(restorePosition, 300);
+                    } else {
+                        isRestoringPosition = false;
+                    }
+
+                // 页面卸载时保存最后位置
+                window.addEventListener('beforeunload', () => {
+                    updateProgress();
+                });
+
+                // 定期保存位置(每30秒)
+                setInterval(() => {
+                    updateProgress();
+                }, 30000);
+
+                // 初始更新一次进度
+                setTimeout(() => {
+                    updateProgress();
+                }, 500);
+
+                })(); // 立即执行
+            </script>
+        </body>
+        </html>
         `;
     }
 
@@ -1754,4 +2091,5 @@ export function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() {
     console.log('Read Plugin is now deactivated.');
+
 }
